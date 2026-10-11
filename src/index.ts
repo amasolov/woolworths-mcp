@@ -9,7 +9,8 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import puppeteer, { Browser, Page } from "puppeteer";
 import fetch from "node-fetch";
-import { Detail, slimProduct, slimSearchProducts } from "./slim.js";
+import { Detail, healthOf, slimProduct, slimSearchProducts, subcategoriesOf } from "./slim.js";
+import { Risk, riskRank } from "./additives.js";
 
 // Cookie storage
 let sessionCookies: any[] = [];
@@ -97,9 +98,9 @@ const TOOLS: Tool[] = [
         },
         detail: {
           type: "string",
-          enum: ["summary", "nutrition", "full"],
+          enum: ["summary", "nutrition", "health", "full"],
           description:
-            "summary (default): name, price, unit price, special/promo, health stars. nutrition: adds per-100g nutrition. full: raw API payload (~3-4k tokens per product, avoid).",
+            "summary (default): name, price, unit price, special/promo, health stars. nutrition: adds per-100g nutrition. health: nutrition plus additive risk from the ingredient list. full: raw API payload (~3-4k tokens per product, avoid).",
           default: "summary",
         },
       },
@@ -119,13 +120,56 @@ const TOOLS: Tool[] = [
         },
         detail: {
           type: "string",
-          enum: ["summary", "nutrition", "full"],
+          enum: ["summary", "nutrition", "health", "full"],
           description:
-            "summary: name, price, unit price, special/promo, health stars. nutrition (default): adds per-100g nutrition. full: raw API payload (~3-4k tokens per product, avoid).",
+            "summary: name, price, unit price, special/promo, health stars. nutrition (default): adds per-100g nutrition. health: nutrition plus additive risk from the ingredient list. full: raw API payload (~3-4k tokens per product, avoid).",
           default: "nutrition",
         },
       },
       required: ["stockcode"],
+    },
+  },
+  {
+    name: "woolworths_find_healthier",
+    description:
+      "Find the healthier options for a shopping-list item. Searches Woolworths, rates each product's additives from its ingredient list " +
+      "(EFSA overexposure and ANSES assessments, as used by apps like Yuka), drops those above maxRisk, and ranks the rest: " +
+      "fewest risky additives, then Health Star Rating, then unit price. Use a plain product name as the term " +
+      '("chicken stock", not "500 mL chicken stock, salt-reduced"). Fresh produce has no ingredient list and comes back as risk "unknown". ' +
+      "Requires session cookies to be obtained first.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        searchTerm: {
+          type: "string",
+          description: "The product to look for",
+        },
+        maxRisk: {
+          type: "string",
+          enum: ["none", "watch", "moderate", "high"],
+          description:
+            "Worst additive risk to keep (default: moderate, i.e. drop only high). high: EFSA found a risk of exceeding the safe intake (nitrites, sulphites, phosphates, carrageenan, MSG...). " +
+            "moderate: a lesser EFSA overexposure risk, or one of the azo colours with an EU hyperactivity warning. watch: on the ANSES list of additives of interest.",
+          default: "moderate",
+        },
+        limit: {
+          type: "number",
+          description: "Number of products to return (default: 5)",
+          default: 5,
+        },
+        candidates: {
+          type: "number",
+          description: "Number of search results to rate (default: 24, max: 36)",
+          default: 24,
+        },
+        sameShelf: {
+          type: "boolean",
+          description:
+            "Only compare products on the same shelf as the top search results, e.g. bananas with bananas and not banana chips (default: true)",
+          default: true,
+        },
+      },
+      required: ["searchTerm"],
     },
   },
   {
@@ -145,9 +189,9 @@ const TOOLS: Tool[] = [
         },
         detail: {
           type: "string",
-          enum: ["summary", "nutrition", "full"],
+          enum: ["summary", "nutrition", "health", "full"],
           description:
-            "summary (default): name, price, unit price, special/promo, health stars. nutrition: adds per-100g nutrition. full: raw API payload (~3-4k tokens per product, avoid).",
+            "summary (default): name, price, unit price, special/promo, health stars. nutrition: adds per-100g nutrition. health: nutrition plus additive risk from the ingredient list. full: raw API payload (~3-4k tokens per product, avoid).",
           default: "summary",
         },
       },
@@ -366,15 +410,11 @@ async function handleCloseBrowser(args: any): Promise<any> {
   };
 }
 
-async function handleSearchProducts(args: any): Promise<any> {
-  const searchTerm = args.searchTerm;
-  const pageNumber = args.pageNumber ?? 1;
-  const pageSize = args.pageSize ?? 10;
-  const detail: Detail = args.detail ?? "summary";
-  const includeSponsored = args.includeSponsored ?? false;
-  const sortType = args.sortType ?? "TraderRelevance";
-  const isSpecial = args.isSpecial ?? false;
-
+// One page of raw search results.
+async function searchRaw(
+  searchTerm: string,
+  { pageNumber = 1, pageSize = 10, sortType = "TraderRelevance", isSpecial = false } = {}
+): Promise<any> {
   // Woolworths search API endpoint (POST method)
   const url = `https://www.woolworths.com.au/apis/ui/Search/products`;
 
@@ -392,13 +432,27 @@ async function handleSearchProducts(args: any): Promise<any> {
     groupEdmVariants: false,
   };
 
+  return makeWoolworthsRequest(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(requestBody),
+  });
+}
+
+async function handleSearchProducts(args: any): Promise<any> {
+  const pageNumber = args.pageNumber ?? 1;
+  const pageSize = args.pageSize ?? 10;
+  const detail: Detail = args.detail ?? "summary";
+  const includeSponsored = args.includeSponsored ?? false;
+
   try {
-    const data = await makeWoolworthsRequest(url, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(requestBody),
+    const data = await searchRaw(args.searchTerm, {
+      pageNumber,
+      pageSize,
+      sortType: args.sortType ?? "TraderRelevance",
+      isSpecial: args.isSpecial ?? false,
     });
 
     const total = data.SearchResultsCount || 0;
@@ -408,6 +462,89 @@ async function handleSearchProducts(args: any): Promise<any> {
       page: pageNumber,
       hasMore: pageNumber * pageSize < total,
       products: slimSearchProducts(data.Products || [], detail, includeSponsored),
+    };
+  } catch (error: any) {
+    return {
+      success: false,
+      error: error.message,
+    };
+  }
+}
+
+async function handleFindHealthier(args: any): Promise<any> {
+  const maxRisk: Risk = args.maxRisk ?? "moderate";
+  const limit = Math.max(1, args.limit ?? 5);
+  const candidates = Math.min(36, Math.max(1, args.candidates ?? 24));
+
+  try {
+    const data = await searchRaw(args.searchTerm, { pageSize: candidates });
+
+    // Flatten tiles the way slimSearchProducts does, but keep the raw
+    // product: ranking needs CupPrice, which the slim form only has as text.
+    const seen = new Set<number>();
+    const rated: { p: any; health: ReturnType<typeof healthOf> }[] = [];
+    for (const tile of data.Products ?? []) {
+      for (const p of tile?.Products ?? [tile]) {
+        if (!p || seen.has(p.Stockcode) || p.IsSponsoredAd) continue;
+        seen.add(p.Stockcode);
+        rated.push({ p, health: healthOf(p) });
+      }
+    }
+
+    // Compare like with like, as Yuka does. Search for "bananas" also finds
+    // banana chips, banana yoghurt and banana prawns; ranked on additives
+    // alone, the prawns would compete with the fruit. The shelf is whichever
+    // subcategory the most relevant few results share most.
+    let shelf: string[] = [];
+    if (args.sameShelf ?? true) {
+      const votes = new Map<string, number>();
+      for (const r of rated.slice(0, 3)) for (const c of subcategoriesOf(r.p)) votes.set(c, (votes.get(c) ?? 0) + 1);
+      const top = Math.max(0, ...votes.values());
+      shelf = [...votes].filter(([, n]) => n === top).map(([c]) => c);
+    }
+    const comparable = shelf.length
+      ? rated.filter((r) => subcategoriesOf(r.p).some((c) => shelf.includes(c)))
+      : rated;
+
+    const kept = comparable.filter((r) => riskRank(r.health.risk) <= riskRank(maxRisk));
+    const excluded = comparable.filter((r) => riskRank(r.health.risk) > riskRank(maxRisk));
+
+    // Rated-and-passing before unknown (no ingredient list: fresh food, or
+    // Woolworths simply lacks the data). Within each: lower risk, more health
+    // stars (none counts as 0), cheaper per unit when units match.
+    const hsr = (p: any) => parseFloat(p.AdditionalAttributes?.healthstarrating) || 0;
+    const unit = (p: any) => (typeof p.CupPrice === "number" && p.CupPrice > 0 ? p.CupPrice : Infinity);
+    // How many additives sit at the worst level found - so among the
+    // excluded, one nitrite beats nitrite plus three phosphates.
+    const worstCount = (h: ReturnType<typeof healthOf>) =>
+      h.flagged?.filter((f) => f.endsWith(`: ${h.risk}`)).length ?? 0;
+    const byHealth = (a: (typeof rated)[0], b: (typeof rated)[0]) =>
+      Number(a.health.risk === "unknown") - Number(b.health.risk === "unknown") ||
+      riskRank(a.health.risk) - riskRank(b.health.risk) ||
+      worstCount(a.health) - worstCount(b.health) ||
+      hsr(b.p) - hsr(a.p) ||
+      (a.p.CupMeasure === b.p.CupMeasure ? unit(a.p) - unit(b.p) : 0);
+    kept.sort(byHealth);
+    excluded.sort(byHealth);
+
+    // Everything was over the line - cured meats nearly always are (nitrite,
+    // phosphates). Offer the least bad rather than nothing; the caller can
+    // also retry with a narrower term ("nitrite free ham").
+    const leastBad = kept.length === 0 ? excluded.slice(0, Math.min(limit, 3)) : [];
+    const dropped = excluded.slice(leastBad.length);
+
+    return {
+      success: true,
+      rated: comparable.length,
+      ...(shelf.length ? { shelf } : {}),
+      products: kept.slice(0, limit).map((r) => slimProduct(r.p, "health")),
+      ...(leastBad.length ? { leastBad: leastBad.map((r) => slimProduct(r.p, "health")) } : {}),
+      // Why the rest were dropped, so the caller can say so.
+      excluded: dropped.slice(0, 10).map((r) => ({
+        name: r.p.DisplayName ?? r.p.Name,
+        flagged: r.health.flagged,
+      })),
+      ...(dropped.length > 10 ? { excludedMore: dropped.length - 10 } : {}),
     };
   } catch (error: any) {
     return {
@@ -673,6 +810,10 @@ async function main() {
 
         case "woolworths_get_product_details":
           result = await handleGetProductDetails(args || {});
+          break;
+
+        case "woolworths_find_healthier":
+          result = await handleFindHealthier(args || {});
           break;
 
         case "woolworths_get_specials":

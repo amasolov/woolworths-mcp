@@ -1,13 +1,14 @@
 {
   "name": "woolworths-mcp-server",
-  "version": "1.1.0",
-  "description": "MCP server for Woolworths Australia: product search, prices and specials",
+  "version": "1.2.0",
+  "description": "MCP server for Woolworths Australia: product search, prices, specials and additive risk",
   "type": "module",
   "main": "dist/index.js",
   "scripts": {
     "build": "tsc",
     "dev": "tsc --watch",
-    "start": "node dist/index.js"
+    "start": "node dist/index.js",
+    "build:additives": "node scripts/build-additives.mjs"
   },
   "keywords": [
     "mcp",

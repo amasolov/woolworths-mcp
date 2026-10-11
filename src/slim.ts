@@ -1,7 +1,9 @@
 // Response slimming for Woolworths API payloads.
 // A raw search tile is ~11 KB (~3-4k tokens); a slim product is ~150 bytes.
 
-export type Detail = "summary" | "nutrition" | "full";
+import { findAdditives, Risk } from "./additives.js";
+
+export type Detail = "summary" | "nutrition" | "health" | "full";
 
 export interface SlimProduct {
   stockcode: number;
@@ -16,6 +18,54 @@ export interface SlimProduct {
   unavailable?: true;
   sponsored?: true;
   nutrition?: Record<string, string>; // per 100g/100mL
+  health?: Health;
+}
+
+export interface Health {
+  /** Worst additive found; "unknown" when Woolworths has no ingredient list. */
+  risk: Risk | "unknown";
+  /** Rated additives, worst first: "E250 Sodium nitrite: high". */
+  flagged?: string[];
+  /** All additives recognised, rated or not. */
+  additives?: number;
+  /** Fresh fruit or vegetables: no ingredient list, nothing added. */
+  produce?: true;
+}
+
+// Woolworths fills a missing attribute with the string "None".
+export function ingredientsOf(p: any): string | undefined {
+  const v = p?.AdditionalAttributes?.ingredients;
+  return typeof v === "string" && v.trim() && v.trim() !== "None" ? v : undefined;
+}
+
+// Fresh fruit and vegetables have no ingredient list because they are the
+// ingredient. Without this they rank as "unknown", below banana chips.
+function isProduce(p: any): boolean {
+  const a = p?.AdditionalAttributes ?? {};
+  return a.sapdepartmentname === "FRUIT AND VEG" || jsonList(a.piescategorynamesjson).includes("Fruit & Veg");
+}
+
+const jsonList = (v: unknown): string[] => {
+  try {
+    const l = typeof v === "string" ? JSON.parse(v) : v;
+    return Array.isArray(l) ? l.filter((x) => typeof x === "string") : [];
+  } catch {
+    return [];
+  }
+};
+
+/** The website's shelf names, e.g. ["Stock & Gravy"] - what "comparable" means. */
+export const subcategoriesOf = (p: any): string[] =>
+  [...new Set(jsonList(p?.AdditionalAttributes?.piessubcategorynamesjson))];
+
+export function healthOf(p: any): Health {
+  const ingredients = ingredientsOf(p);
+  if (!ingredients) return isProduce(p) ? { risk: "none", produce: true } : { risk: "unknown" };
+  const r = findAdditives(ingredients);
+  const h: Health = { risk: r.risk };
+  if (r.flagged.length) h.flagged = r.flagged.map((a) => `${a.code} ${a.name}: ${a.risk}`);
+  if (r.count) h.additives = r.count;
+  return h;
 }
 
 const stripHtml = (s?: string | null): string | undefined =>
@@ -84,10 +134,11 @@ export function slimProduct(p: any, detail: Detail = "summary"): SlimProduct | a
   if (hsr !== undefined) s.hsr = hsr;
   if (p.IsAvailable === false || p.IsPurchasable === false) s.unavailable = true;
   if (p.IsSponsoredAd) s.sponsored = true;
-  if (detail === "nutrition") {
+  if (detail === "nutrition" || detail === "health") {
     const n = parseNutrition(attrs.nutritionalinformation);
     if (n) s.nutrition = n;
   }
+  if (detail === "health") s.health = healthOf(p);
   return s;
 }
 
