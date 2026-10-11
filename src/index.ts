@@ -13,6 +13,7 @@
 // restart cannot strand a client on a session id the new process never
 // issued.
 
+import { readFileSync } from "node:fs";
 import { createServer, IncomingMessage, ServerResponse } from "node:http";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -20,7 +21,9 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { callTool, toolDefinitions } from "./tools.js";
 
-const SERVER_INFO = { name: "woolworths-mcp-server", version: "1.2.0" };
+// The version is package.json's, so a release bump cannot miss it.
+const { version } = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
+const SERVER_INFO = { name: "woolworths-mcp-server", version };
 const MAX_BODY_BYTES = 1024 * 1024;
 
 function buildServer(): Server {
