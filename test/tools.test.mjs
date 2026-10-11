@@ -49,7 +49,13 @@ beforeEach(() => {
 test("only the catalogue tools are listed by default", () => {
   assert.deepEqual(
     toolDefinitions.map((t) => t.name),
-    ["woolworths_search_products", "woolworths_get_product_details", "woolworths_get_specials", "woolworths_get_categories"]
+    [
+      "woolworths_search_products",
+      "woolworths_get_product_details",
+      "woolworths_find_healthier",
+      "woolworths_get_specials",
+      "woolworths_get_categories",
+    ]
   );
   for (const t of toolDefinitions) assert.equal(t.handler, undefined);
 });
@@ -135,6 +141,22 @@ test("specials by type, and by type within a department", async () => {
   assert.equal(body.url, "/shop/browse/specials/half-price/personal-care");
 
   await assert.rejects(callTool("woolworths_get_specials", { type: "nope" }), /Available: .*half-price/);
+});
+
+test("health detail rates additives from the ingredient list", async () => {
+  const r = await callTool("woolworths_get_product_details", { stockcode: "888140", detail: "health" });
+  assert.deepEqual(r.product.health, { risk: "none" });
+  assert.ok(r.product.nutrition, "health includes nutrition");
+});
+
+test("find_healthier rates the search results on the top results' shelf", async () => {
+  const r = await callTool("woolworths_find_healthier", { searchTerm: "milk", limit: 2 });
+  assert.deepEqual(r.shelf, ["Full Cream Milk"]);
+  assert.equal(r.products.length, 2);
+  assert.ok(r.products.every((p) => p.health && !p.sponsored));
+  assert.deepEqual(r.excluded, []);
+  assert.equal(r.success, undefined);
+  await assert.rejects(callTool("woolworths_find_healthier", { searchTerm: "milk", maxRisk: "low" }), /maxRisk/);
 });
 
 test("unknown tools are an error", async () => {
