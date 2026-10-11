@@ -83,7 +83,10 @@ async function captureSession(): Promise<Session> {
     // but no more: it keeps trackers polling, so networkidle can take 15s or
     // never come, and waiting for it once made the first call time out.
     await page.waitForNetworkIdle({ idleTime: 500, timeout: SETTLE_TIMEOUT_MS }).catch(() => {});
-    const cookies = await page.cookies();
+    // The browser context holds every site's cookies, trackers included; send
+    // Woolworths only its own. (Page.cookies() did that filtering, and is
+    // deprecated from Puppeteer 24.)
+    const cookies = (await browser.cookies()).filter((c) => /(^|\.)woolworths\.com\.au$/.test(c.domain.replace(/^\./, "")));
     if (cookies.length === 0) {
       throw new WoolworthsError("Woolworths homepage set no cookies");
     }
