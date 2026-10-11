@@ -1,0 +1,14 @@
+{
+  $schema: "https://docs.renovatebot.com/renovate-schema.json",
+  extends: ["config:recommended"],
+  // package-lock.json is what the image installs (npm ci), so it is the thing
+  // that has to move. Weekly maintenance refreshes it within package.json's
+  // ranges; CI proves it still builds.
+  lockFileMaintenance: { enabled: true },
+  packageRules: [
+    {
+      matchManagers: ["github-actions"],
+      groupName: "GitHub Actions",
+    },
+  ],
+}
