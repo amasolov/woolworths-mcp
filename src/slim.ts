@@ -1,0 +1,113 @@
+// Response slimming for Woolworths API payloads.
+// A raw search tile is ~11 KB (~3-4k tokens); a slim product is ~150 bytes.
+
+export type Detail = "summary" | "nutrition" | "full";
+
+export interface SlimProduct {
+  stockcode: number;
+  name: string;            // DisplayName already includes brand + pack size
+  price: number | null;
+  cup?: string;            // unit price, e.g. "$1.65 / 1L" - key for comparisons
+  special?: true;
+  was?: number;
+  save?: number;
+  promo?: string;          // multibuy / "Range was $4.50" / member price text
+  hsr?: number;            // health star rating
+  unavailable?: true;
+  sponsored?: true;
+  nutrition?: Record<string, string>; // per 100g/100mL
+}
+
+const stripHtml = (s?: string | null): string | undefined =>
+  s ? s.replace(/<[^>]*>/g, "").replace(/\s+/g, " ").trim() || undefined : undefined;
+
+function parseHsr(v: unknown): number | undefined {
+  const n = parseFloat(String(v ?? ""));
+  return Number.isFinite(n) ? n : undefined;
+}
+
+// nutritionalinformation is a JSON string inside JSON, with ~25 rows of
+// per-100g, per-serve, ValueWord and SuffixUnits duplicates. Keep 8 numbers.
+const NUTRIENTS: Record<string, string> = {
+  "Energy kJ Quantity Per 100g - Total - NIP": "energyKj",
+  "Protein Quantity Per 100g - Total - NIP": "protein",
+  "Fat Total Quantity Per 100g - Total - NIP": "fat",
+  "Fat Saturated Quantity Per 100g - Total - NIP": "satFat",
+  "Carbohydrate Quantity Per 100g - Total - NIP": "carbs",
+  "Sugars Quantity Per 100g - Total - NIP": "sugars",
+  "Dietary Fibre Quantity Per 100g - Total - NIP": "fibre",
+  "Sodium Quantity Per 100g - Total - NIP": "sodium",
+};
+
+export function parseNutrition(raw: unknown): Record<string, string> | undefined {
+  if (typeof raw !== "string" || !raw) return undefined;
+  try {
+    const attrs: any[] = JSON.parse(raw)?.Attributes ?? [];
+    const out: Record<string, string> = {};
+    for (const a of attrs) {
+      const key = NUTRIENTS[a?.Name];
+      if (key && a.Value != null) out[key] = String(a.Value);
+    }
+    return Object.keys(out).length ? out : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function promoText(p: any): string | undefined {
+  return (
+    stripHtml(p.CentreTag?.TagContentText) ??
+    stripHtml(p.CentreTag?.TagContent) ??
+    stripHtml(p.HeaderTag?.Content)
+  );
+}
+
+export function slimProduct(p: any, detail: Detail = "summary"): SlimProduct | any {
+  if (detail === "full") return p;
+  const attrs = p.AdditionalAttributes ?? {};
+
+  // Only emit non-default fields: absent means false / not applicable.
+  const s: SlimProduct = {
+    stockcode: p.Stockcode,
+    name: p.DisplayName ?? p.Name,
+    price: p.Price ?? null,
+  };
+  if (p.HasCupPrice && p.CupString) s.cup = p.CupString;
+  if (p.IsOnSpecial) {
+    s.special = true;
+    if (p.WasPrice != null && p.WasPrice !== p.Price) s.was = p.WasPrice;
+    if (p.SavingsAmount) s.save = p.SavingsAmount;
+  }
+  const promo = promoText(p);
+  if (promo) s.promo = promo;
+  const hsr = parseHsr(attrs.healthstarrating);
+  if (hsr !== undefined) s.hsr = hsr;
+  if (p.IsAvailable === false || p.IsPurchasable === false) s.unavailable = true;
+  if (p.IsSponsoredAd) s.sponsored = true;
+  if (detail === "nutrition") {
+    const n = parseNutrition(attrs.nutritionalinformation);
+    if (n) s.nutrition = n;
+  }
+  return s;
+}
+
+// Search returns tiles: { Products: [variant...], Name, DisplayName }.
+// Flatten, optionally drop injected ads, and dedupe by stockcode
+// (a sponsored product often also appears organically further down).
+export function slimSearchProducts(
+  tiles: any[],
+  detail: Detail,
+  includeSponsored: boolean
+): any[] {
+  const seen = new Set<number>();
+  const out: any[] = [];
+  for (const tile of tiles ?? []) {
+    for (const p of tile?.Products ?? [tile]) {
+      if (!p || seen.has(p.Stockcode)) continue;
+      if (!includeSponsored && p.IsSponsoredAd) continue;
+      seen.add(p.Stockcode);
+      out.push(slimProduct(p, detail));
+    }
+  }
+  return out;
+}

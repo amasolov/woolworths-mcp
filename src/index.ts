@@ -9,6 +9,7 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import puppeteer, { Browser, Page } from "puppeteer";
 import fetch from "node-fetch";
+import { Detail, slimProduct, slimSearchProducts } from "./slim.js";
 
 // Cookie storage
 let sessionCookies: any[] = [];
@@ -81,8 +82,8 @@ const TOOLS: Tool[] = [
         },
         pageSize: {
           type: "number",
-          description: "Number of results to return (default: 36)",
-          default: 36,
+          description: "Number of results to return (default: 10)",
+          default: 10,
         },
         sortType: {
           type: "string",
@@ -94,6 +95,18 @@ const TOOLS: Tool[] = [
           type: "boolean",
           description: "Filter for special offers only (default: false)",
           default: false,
+        },
+        includeSponsored: {
+          type: "boolean",
+          description: "Include sponsored ad products injected into results (default: false)",
+          default: false,
+        },
+        detail: {
+          type: "string",
+          enum: ["summary", "nutrition", "full"],
+          description:
+            "summary (default): name, price, unit price, special/promo, health stars. nutrition: adds per-100g nutrition. full: raw API payload (~3-4k tokens per product, avoid).",
+          default: "summary",
         },
       },
       required: ["searchTerm"],
@@ -109,6 +122,13 @@ const TOOLS: Tool[] = [
         stockcode: {
           type: "string",
           description: "The product stockcode/ID",
+        },
+        detail: {
+          type: "string",
+          enum: ["summary", "nutrition", "full"],
+          description:
+            "summary: name, price, unit price, special/promo, health stars. nutrition (default): adds per-100g nutrition. full: raw API payload (~3-4k tokens per product, avoid).",
+          default: "nutrition",
         },
       },
       required: ["stockcode"],
@@ -128,6 +148,13 @@ const TOOLS: Tool[] = [
           type: "number",
           description: "Number of results to return (default: 20)",
           default: 20,
+        },
+        detail: {
+          type: "string",
+          enum: ["summary", "nutrition", "full"],
+          description:
+            "summary (default): name, price, unit price, special/promo, health stars. nutrition: adds per-100g nutrition. full: raw API payload (~3-4k tokens per product, avoid).",
+          default: "summary",
         },
       },
     },
@@ -344,7 +371,9 @@ async function handleCloseBrowser(args: any): Promise<any> {
 async function handleSearchProducts(args: any): Promise<any> {
   const searchTerm = args.searchTerm;
   const pageNumber = args.pageNumber ?? 1;
-  const pageSize = args.pageSize ?? 36;
+  const pageSize = args.pageSize ?? 10;
+  const detail: Detail = args.detail ?? "summary";
+  const includeSponsored = args.includeSponsored ?? false;
   const sortType = args.sortType ?? "TraderRelevance";
   const isSpecial = args.isSpecial ?? false;
 
@@ -374,16 +403,13 @@ async function handleSearchProducts(args: any): Promise<any> {
       body: JSON.stringify(requestBody),
     });
 
+    const total = data.SearchResultsCount || 0;
     return {
       success: true,
-      searchTerm,
-      totalResults: data.SearchResultsCount || 0,
-      products: data.Products || [],
-      pagination: data.Pagination || {
-        TotalRecords: data.SearchResultsCount || 0,
-        PageNumber: pageNumber,
-        PageSize: pageSize,
-      },
+      total,
+      page: pageNumber,
+      hasMore: pageNumber * pageSize < total,
+      products: slimSearchProducts(data.Products || [], detail, includeSponsored),
     };
   } catch (error: any) {
     return {
@@ -400,9 +426,12 @@ async function handleGetProductDetails(args: any): Promise<any> {
 
   try {
     const data = await makeWoolworthsRequest(url);
+    const detail: Detail = args.detail ?? "nutrition";
+    // Detail endpoint wraps the product; fall back to the raw object if not.
+    const product = data?.Product ?? data;
     return {
       success: true,
-      product: data,
+      product: detail === "full" ? data : slimProduct(product, detail),
     };
   } catch (error: any) {
     return {
@@ -430,7 +459,11 @@ async function handleGetSpecials(args: any): Promise<any> {
       success: true,
       category: category || "all",
       totalResults: data.TotalRecordCount || 0,
-      products: data.Products || data.Bundles || [],
+      products: slimSearchProducts(
+        data.Products || data.Bundles || [],
+        args.detail ?? "summary",
+        false
+      ),
     };
   } catch (error: any) {
     return {
@@ -676,7 +709,7 @@ async function main() {
         content: [
           {
             type: "text",
-            text: JSON.stringify(result, null, 2),
+            text: JSON.stringify(result),
           },
         ],
       };
