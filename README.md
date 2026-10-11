@@ -14,6 +14,8 @@ Woolworths' web APIs sit behind bot protection: a request needs the cookies a re
 
 The first call takes a few seconds; later ones are API round trips.
 
+Woolworths answers a burst of calls with its bot-check page (HTTP 200, HTML instead of JSON). The server paces its calls (at most two at once, 250 ms apart) and caches identical ones: searches and specials for 5 minutes, product details for 30. If the bot-check page survives a cookie refresh, the call fails with a "rate-limited, retry later" error and the server makes no calls to Woolworths for a minute, rather than prolonging the block.
+
 The session is anonymous. It is enough for the catalogue, but not tied to anyone's Woolworths account.
 
 ## Running it
@@ -80,7 +82,7 @@ Find the healthier options for a shopping-list item: search, rate every result's
 - `searchTerm` (string, required): a plain product name - "chicken stock", not "500 mL chicken stock, salt-reduced"
 - `maxRisk` (string, optional): `none`, `watch`, `moderate` or `high` - the worst additive risk to keep (default: `moderate`, i.e. drop only `high`)
 - `limit` (number, optional): products to return (default: 5)
-- `candidates` (number, optional): search results to rate (default: 24, max: 36)
+- `candidates` (number, optional): search results to rate (default: 12, max: 36)
 - `sameShelf` (boolean, optional): compare only products on the same shelf as the top results (default: true)
 
 Returns `products` (slim, at `health` detail), `shelf`, and `excluded` - what was dropped and why. When nothing passes (cured meats, nearly always nitrite and phosphates), `leastBad` holds the closest.
@@ -147,7 +149,7 @@ Levels:
 | Level | Meaning | Examples |
 | --- | --- | --- |
 | `high` | EFSA found a high risk of some consumers exceeding the safe intake | nitrites, sulphites, benzoates, sorbates, phosphates, carrageenan, MSG |
-| `moderate` | A lesser EFSA overexposure risk, or one of the six azo colours that carry an EU hyperactivity warning | ammonia caramel (150c), tartrazine (102), potassium chloride (508) |
+| `moderate` | A lesser EFSA overexposure risk, or one of the six azo colours that carry an EU hyperactivity warning | ammonia caramel (150c), tartrazine (102), sunset yellow (110) |
 | `watch` | On the ANSES (France) 2019 list of additives of interest | acesulfame K, sucralose, 472e |
 | `none` | Assessed, no concern; or nothing rated was found | |
 

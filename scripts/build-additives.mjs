@@ -78,6 +78,20 @@ for (const k of ["E102", "E104", "E110", "E122", "E124", "E129"]) {
   if (e) e.risk = Math.max(e.risk, 2);
 }
 
+// The chlorides - hydrochloric acid and its potassium, calcium and magnesium
+// salts. The taxonomy rates them moderate because EFSA's 2019 re-evaluation
+// (doi:10.2903/j.efsa.2019.5751) found 95th-percentile exposure "slightly
+// above" its chloride reference value in toddlers, children and adolescents.
+// But that opinion's conclusion is that they do "not raise a safety concern
+// at the reported use and use levels", chloride being an essential nutrient
+// that ordinary salt supplies far more of. Flagging calcium chloride - the
+// firming agent in tinned tomatoes and tofu - as moderate, next to ammonia
+// caramel, ranks products on a non-finding. Assessed, no concern.
+for (const k of ["E507", "E508", "E509", "E511"]) {
+  const e = entries.get(k);
+  if (e) e.risk = 0;
+}
+
 // EFSA mostly rates a group (E450, diphosphates) and not each member
 // (E450(iii), tetrasodium diphosphate), while ANSES lists some members by
 // themselves. A member takes the stricter of its own rating and its parents'.

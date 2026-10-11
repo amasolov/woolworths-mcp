@@ -48,12 +48,20 @@ function detail(args: Args, fallback: Detail): Detail {
 
 const SORT_TYPES = ["TraderRelevance", "PriceAsc", "PriceDesc", "Name"];
 
+// How long an identical call is answered from memory. Prices and specials
+// change at most daily (specials on Wednesdays), and an LLM often repeats a
+// call within a conversation; product details - ingredients above all - are
+// the most repeated and the slowest to change.
+const SEARCH_CACHE_MS = 5 * 60 * 1000;
+const DETAIL_CACHE_MS = 30 * 60 * 1000;
+
 // One page of raw search results.
 function searchRaw(
   searchTerm: string,
   { pageNumber = 1, pageSize = 10, sortType = "TraderRelevance", isSpecial = false } = {}
 ): Promise<any> {
   return request("/apis/ui/Search/products", {
+    cacheMs: SEARCH_CACHE_MS,
     body: {
       searchTerm,
       pageNumber,
@@ -120,7 +128,11 @@ const catalogue: Array<Tool & { handler: Handler }> = [
   },
   {
     name: "woolworths_get_product_details",
-    description: "Get one Woolworths product by stockcode, including per-100g nutrition by default.",
+    description:
+      "Get one Woolworths product by stockcode, including per-100g nutrition by default. " +
+      "Do not call this for every product in a list: woolworths_search_products with detail nutrition or health, " +
+      "or woolworths_find_healthier, already return the same data for a whole page in one call, " +
+      "and a burst of calls gets the server rate-limited by Woolworths.",
     inputSchema: {
       type: "object",
       properties: {
@@ -133,7 +145,7 @@ const catalogue: Array<Tool & { handler: Handler }> = [
       const stockcode = String(args.stockcode ?? "");
       if (!/^\d+$/.test(stockcode)) throw new Error("stockcode must be numeric");
       const d = detail(args, "nutrition");
-      const data = await request(`/apis/ui/product/detail/${stockcode}`);
+      const data = await request(`/apis/ui/product/detail/${stockcode}`, { cacheMs: DETAIL_CACHE_MS });
       // The detail endpoint wraps the product in `Product` (confirmed live);
       // fall back to the top level in case that ever changes.
       return { product: d === "full" ? data : slimProduct(data?.Product ?? data, d) };
@@ -159,7 +171,7 @@ const catalogue: Array<Tool & { handler: Handler }> = [
           default: "moderate",
         },
         limit: { type: "number", description: "Number of products to return, 1-36 (default: 5)", default: 5 },
-        candidates: { type: "number", description: "Number of search results to rate, 1-36 (default: 24)", default: 24 },
+        candidates: { type: "number", description: "Number of search results to rate, 1-36 (default: 12)", default: 12 },
         sameShelf: {
           type: "boolean",
           description:
@@ -174,7 +186,7 @@ const catalogue: Array<Tool & { handler: Handler }> = [
       const maxRisk = str(args, "maxRisk", "moderate") as Risk;
       if (!RISKS.includes(maxRisk)) throw new Error(`maxRisk must be one of ${RISKS.join(", ")}`);
       const limit = int(args, "limit", 5, 1, 36);
-      const candidates = int(args, "candidates", 24, 1, 36);
+      const candidates = int(args, "candidates", 12, 1, 36);
       const sameShelf = bool(args, "sameShelf", true);
 
       const data = await searchRaw(searchTerm, { pageSize: candidates });

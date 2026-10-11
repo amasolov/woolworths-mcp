@@ -3,9 +3,9 @@
 // The APIs sit behind Akamai bot protection: a request without the cookies a
 // real browser picks up on the homepage gets a 403. So the first call launches
 // headless Chromium once, loads the homepage, keeps its cookies and closes the
-// browser. Later calls reuse the cookies until one comes back 403 - Akamai's
-// answer once they expire - then they are refreshed once and the call
-// retried. A 401 is not refreshed: it means the endpoint wants a logged-in
+// browser. Later calls reuse the cookies until one comes back 403 or as the
+// bot-check page - Akamai's answers once they expire - then they are
+// refreshed once and the call retried. A 401 is not refreshed: it means the endpoint wants a logged-in
 // account, which fresh anonymous cookies cannot provide.
 //
 // The cookies are per process, not per MCP session: one Chromium per pod
@@ -150,42 +150,145 @@ async function send(path: string, init: RequestInit, s: Session): Promise<Respon
       ...(init.body ? { "Content-Type": "application/json" } : {}),
       ...init.headers,
     },
-    signal: AbortSignal.timeout(30_000),
+    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
   });
 }
 
-/** GET or POST a Woolworths API path, handling cookies. Returns parsed JSON. */
-export async function request<T = any>(
-  path: string,
-  init: { method?: "GET" | "POST"; body?: unknown } = {}
-): Promise<T> {
-  const reqInit: RequestInit = {
-    method: init.method ?? (init.body === undefined ? "GET" : "POST"),
-    body: init.body === undefined ? undefined : JSON.stringify(init.body),
+// --- pacing -----------------------------------------------------------------
+//
+// Woolworths answers a burst of API calls with Akamai's bot-check page: HTTP
+// 200, HTML instead of JSON, for a minute or more. A client fanning out
+// get_product_details over a search page is enough to trigger it. So calls
+// are paced (at most MAX_IN_FLIGHT at once, starts at least MIN_SPACING_MS
+// apart), identical calls are answered from a short cache, and once blocked
+// the server stops calling for BLOCK_COOLDOWN_MS rather than prolonging it.
+
+const MAX_IN_FLIGHT = 2;
+let minSpacingMs = 250;
+const BLOCK_COOLDOWN_MS = 60_000;
+const REQUEST_TIMEOUT_MS = 30_000;
+
+let inFlight = 0;
+let nextStart = 0;
+const waiting: Array<() => void> = [];
+let blockedUntil = 0;
+
+async function acquireSlot(): Promise<() => void> {
+  while (inFlight >= MAX_IN_FLIGHT) await new Promise<void>((r) => waiting.push(r));
+  inFlight++;
+  const start = Math.max(Date.now(), nextStart);
+  nextStart = start + minSpacingMs;
+  if (start > Date.now()) await new Promise((r) => setTimeout(r, start - Date.now()));
+  return () => {
+    inFlight--;
+    waiting.shift()?.();
   };
-
-  let response = await send(path, reqInit, await getSession());
-  if (response.status === 403) {
-    console.error(`[woolworths] ${response.status} on ${path}, refreshing cookies`);
-    await response.body?.cancel();
-    response = await send(path, reqInit, await getSession(true));
-  }
-
-  if (!response.ok) {
-    const text = (await response.text()).slice(0, 300);
-    throw new WoolworthsError(
-      `Woolworths API ${response.status} ${response.statusText} for ${path}${text ? `: ${text}` : ""}`,
-      response.status
-    );
-  }
-  return (await response.json()) as T;
 }
 
-/** Test seam: replace the browser capture and reset all session state. */
-export function _resetForTests(fake?: () => Promise<Session>) {
+// A small TTL cache of parsed responses, keyed by method, path and body.
+const CACHE_MAX_ENTRIES = 500;
+const cache = new Map<string, { expires: number; value: unknown }>();
+
+function cached(key: string): unknown {
+  const hit = cache.get(key);
+  if (!hit) return undefined;
+  if (hit.expires > Date.now()) return hit.value;
+  cache.delete(key);
+  return undefined;
+}
+
+function remember(key: string, value: unknown, ttlMs: number) {
+  if (cache.size >= CACHE_MAX_ENTRIES) cache.delete(cache.keys().next().value!);
+  cache.set(key, { expires: Date.now() + ttlMs, value });
+}
+
+const RATE_LIMITED =
+  "Woolworths is rate-limiting this server: it answered with its bot-check page instead of data. " +
+  "Retry in a minute or two, and make fewer calls - more requests now only prolong it.";
+
+type Outcome = { kind: "json"; value: unknown } | { kind: "rejected"; status: number };
+
+// One paced call. "rejected" is a 403 or the bot-check page: both mean the
+// cookies are no longer accepted, and both are worth exactly one refresh.
+async function attempt(path: string, init: RequestInit, s: Session): Promise<Outcome> {
+  const release = await acquireSlot();
+  try {
+    let response: Response;
+    try {
+      response = await send(path, init, s);
+    } catch (error) {
+      if ((error as Error).name === "TimeoutError") {
+        throw new WoolworthsError(
+          `Woolworths did not answer ${path} within ${REQUEST_TIMEOUT_MS / 1000}s. It may be rate-limiting this server; retry in a minute.`
+        );
+      }
+      throw error;
+    }
+    if (response.status === 403) {
+      await response.body?.cancel();
+      return { kind: "rejected", status: 403 };
+    }
+    const text = await response.text();
+    if (!response.ok) {
+      throw new WoolworthsError(
+        `Woolworths API ${response.status} ${response.statusText} for ${path}${text ? `: ${text.slice(0, 300)}` : ""}`,
+        response.status
+      );
+    }
+    if (text.trimStart().startsWith("<")) return { kind: "rejected", status: response.status };
+    try {
+      return { kind: "json", value: JSON.parse(text) };
+    } catch {
+      throw new WoolworthsError(`Woolworths returned something other than JSON for ${path}: ${text.slice(0, 120)}`);
+    }
+  } finally {
+    release();
+  }
+}
+
+/**
+ * GET or POST a Woolworths API path, handling cookies, pacing and blocks.
+ * Returns parsed JSON. With `cacheMs`, an identical call within that time is
+ * answered from memory; treat the result as read-only.
+ */
+export async function request<T = any>(
+  path: string,
+  init: { method?: "GET" | "POST"; body?: unknown; cacheMs?: number } = {}
+): Promise<T> {
+  const method = init.method ?? (init.body === undefined ? "GET" : "POST");
+  const body = init.body === undefined ? undefined : JSON.stringify(init.body);
+  const key = `${method} ${path} ${body ?? ""}`;
+  if (init.cacheMs) {
+    const hit = cached(key);
+    if (hit !== undefined) return hit as T;
+  }
+  if (Date.now() < blockedUntil) throw new WoolworthsError(RATE_LIMITED, 429);
+
+  const reqInit: RequestInit = { method, body };
+  let outcome = await attempt(path, reqInit, await getSession());
+  if (outcome.kind === "rejected") {
+    console.error(`[woolworths] ${outcome.status === 403 ? "403" : "bot-check page"} on ${path}, refreshing cookies`);
+    outcome = await attempt(path, reqInit, await getSession(true));
+  }
+  if (outcome.kind === "rejected") {
+    blockedUntil = Date.now() + BLOCK_COOLDOWN_MS;
+    console.error(`[woolworths] still rejected after a cookie refresh; pausing calls for ${BLOCK_COOLDOWN_MS / 1000}s`);
+    throw new WoolworthsError(RATE_LIMITED, 429);
+  }
+
+  if (init.cacheMs) remember(key, outcome.value, init.cacheMs);
+  return outcome.value as T;
+}
+
+/** Test seam: replace the browser capture and reset all session, pacing and cache state. */
+export function _resetForTests(fake?: () => Promise<Session>, opts: { minSpacingMs?: number } = {}) {
   session = null;
   pending = null;
   lastAttempt = 0;
   lastError = "";
   capture = fake ?? captureSession;
+  minSpacingMs = opts.minSpacingMs ?? 0;
+  nextStart = 0;
+  blockedUntil = 0;
+  cache.clear();
 }
