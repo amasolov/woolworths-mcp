@@ -2,6 +2,8 @@
 
 A Model Context Protocol (MCP) server for interacting with Woolworths Australia's online shopping platform. This server provides tools for browsing products, searching items, viewing specials, and more.
 
+This is a continuation of [elijah-g/Woolworths-mcp](https://github.com/elijah-g/Woolworths-mcp), keeping its history. Differences so far: slim product responses (see [Response detail](#response-detail)), a headless browser by default, and a committed lockfile. Releases are tagged `vX.Y.Z`.
+
 <a href="https://glama.ai/mcp/servers/@elijah-g/Woolworths-mcp">
   <img width="380" height="200" src="https://glama.ai/mcp/servers/@elijah-g/Woolworths-mcp/badge" alt="Woolworths Server MCP server" />
 </a>
@@ -66,15 +68,9 @@ Make sure to update the path to match your installation directory.
 
 Opens a browser and navigates to the Woolworths website. This is typically the first step to establish a session.
 
-**Parameters:**
-- `headless` (boolean, optional): Whether to run in headless mode (default: false)
+The browser is headless. Set `WOOLWORTHS_HEADLESS=false` in the server's environment to get a visible one, e.g. to log in by hand on a desktop.
 
-**Example:**
-```json
-{
-  "headless": false
-}
-```
+**Parameters:** None
 
 ### 2. woolworths_navigate
 
@@ -101,13 +97,18 @@ Search for products on Woolworths.
 
 **Parameters:**
 - `searchTerm` (string, required): The product search term
-- `pageSize` (number, optional): Number of results to return (default: 20)
+- `pageNumber` (number, optional): Page number (default: 1)
+- `pageSize` (number, optional): Number of results to return (default: 10)
+- `sortType` (string, optional): `TraderRelevance`, `PriceAsc`, `PriceDesc` or `Name`
+- `isSpecial` (boolean, optional): Specials only (default: false)
+- `includeSponsored` (boolean, optional): Keep the sponsored ads Woolworths injects into results (default: false)
+- `detail` (string, optional): see [Response detail](#response-detail) (default: `summary`)
 
 **Example:**
 ```json
 {
   "searchTerm": "milk",
-  "pageSize": 20
+  "pageSize": 10
 }
 ```
 
@@ -117,6 +118,7 @@ Get detailed information about a specific product by its stockcode.
 
 **Parameters:**
 - `stockcode` (string, required): The product stockcode/ID
+- `detail` (string, optional): see [Response detail](#response-detail) (default: `nutrition`)
 
 ### 7. woolworths_get_specials
 
@@ -125,6 +127,7 @@ Get current specials and deals from Woolworths.
 **Parameters:**
 - `category` (string, optional): Category filter (e.g., 'fruit-veg', 'meat-seafood')
 - `pageSize` (number, optional): Number of results to return (default: 20)
+- `detail` (string, optional): see [Response detail](#response-detail) (default: `summary`)
 
 ### 8. woolworths_get_categories
 
@@ -169,10 +172,24 @@ Update the quantity of a product in the shopping cart/trolley.
 - `stockcode` (number, required): The product stockcode/ID
 - `quantity` (number, required): New quantity
 
+## Response detail
+
+The raw Woolworths payload is about 11 KB (3-4k tokens) per product, so the product tools return a slim shape instead:
+
+```json
+{"stockcode":123456,"name":"Woolworths Full Cream Milk 2L","price":3.3,"cup":"$1.65 / 1L","promo":"Range was $3.50","hsr":4}
+```
+
+Fields at their default are left out: `special`, `was` and `save` appear only on a special, `promo` only when there is promotion text (multibuys and "lower shelf price" deals are not `special`), `hsr` only when the product has a health star rating, and `unavailable` / `sponsored` only when true.
+
+- `summary`: the fields above.
+- `nutrition`: adds `nutrition`, eight per-100g values (energyKj, protein, fat, satFat, carbs, sugars, fibre, sodium).
+- `full`: the raw API payload, unchanged. For debugging.
+
 ## Typical Workflow
 
 1. **Open Browser**: Use `woolworths_open_browser` to launch a browser window
-2. **Log In** (if needed): The browser will open in non-headless mode by default, allowing you to manually log in to your Woolworths account if required
+2. **Log In** (if needed): with `WOOLWORTHS_HEADLESS=false` the browser is visible, so you can log in to your Woolworths account by hand
 3. **Capture Cookies**: Use `woolworths_get_cookies` to capture session cookies
 4. **Close Browser**: Use `woolworths_close_browser` to close the browser (cookies are preserved)
 5. **Use API Tools**: Now you can use any of the API tools (search, get product details, etc.)
@@ -251,7 +268,7 @@ npm run build
 
 ## Notes
 
-- The browser opens in non-headless mode by default to allow for manual login
+- The browser is headless by default; `WOOLWORTHS_HEADLESS=false` makes it visible for manual login
 - Session cookies are stored in memory and persist until the server is restarted
 - API endpoints are based on Woolworths' public web interface and may change
 - Always respect Woolworths' Terms of Service when using this tool
@@ -260,7 +277,7 @@ npm run build
 
 ### Browser won't open
 - Check that Puppeteer installed correctly
-- Try running with headless: true if display issues occur
+- On a machine without a display, make sure `WOOLWORTHS_HEADLESS` is not set to `false`
 
 ### API requests fail
 - Ensure you've captured cookies with `woolworths_get_cookies`
@@ -273,7 +290,7 @@ npm run build
 
 ## License
 
-MIT
+GPL-3.0, see [LICENSE](LICENSE).
 
 ## Disclaimer
 

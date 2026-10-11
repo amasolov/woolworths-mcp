@@ -41,6 +41,6 @@ echo "Config file location:"
 echo "macOS: ~/Library/Application Support/Claude/claude_desktop_config.json"
 echo "Linux: ~/.config/Claude/claude_desktop_config.json"
 echo ""
-echo "See SETUP.md for more details."
+echo "See README.md for more details."
 echo ""
 

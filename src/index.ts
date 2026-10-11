@@ -24,13 +24,7 @@ const TOOLS: Tool[] = [
       "Opens a browser and navigates to Woolworths website. This is the first step to establish a session.",
     inputSchema: {
       type: "object",
-      properties: {
-        headless: {
-          type: "boolean",
-          description: "Whether to run browser in headless mode (default: false for easier login)",
-          default: false,
-        },
-      },
+      properties: {},
     },
   },
   {
@@ -283,7 +277,11 @@ async function handleOpenBrowser(args: any): Promise<any> {
     };
   }
 
-  const headless = args.headless ?? false;
+  // Headless unless WOOLWORTHS_HEADLESS=false. Not a tool argument: a server
+  // with no display dies with "Missing X server" on a visible launch, and the
+  // caller (an LLM) cannot know whether there is one. Set it to false on a
+  // desktop to log in by hand.
+  const headless = process.env.WOOLWORTHS_HEADLESS !== "false";
 
   browser = await puppeteer.launch({
     headless,

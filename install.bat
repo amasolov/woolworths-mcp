@@ -41,7 +41,7 @@ echo.
 echo Config file location:
 echo Windows: %%APPDATA%%\Claude\claude_desktop_config.json
 echo.
-echo See SETUP.md for more details.
+echo See README.md for more details.
 echo.
 pause
 
