@@ -2,7 +2,7 @@
 
 A Model Context Protocol (MCP) server for interacting with Woolworths Australia's online shopping platform. This server provides tools for browsing products, searching items, viewing specials, and more.
 
-This is a continuation of [elijah-g/Woolworths-mcp](https://github.com/elijah-g/Woolworths-mcp), keeping its history. Differences so far: slim product responses (see [Response detail](#response-detail)), a headless browser by default, and a committed lockfile. Releases are tagged `vX.Y.Z`.
+This is a continuation of [elijah-g/Woolworths-mcp](https://github.com/elijah-g/Woolworths-mcp), keeping its history. Differences so far: slim product responses (see [Response detail](#response-detail)), additive risk ratings and a healthier-alternative search (see [Additive risk](#additive-risk)), a headless browser by default, and a committed lockfile. Releases are tagged `vX.Y.Z`.
 
 <a href="https://glama.ai/mcp/servers/@elijah-g/Woolworths-mcp">
   <img width="380" height="200" src="https://glama.ai/mcp/servers/@elijah-g/Woolworths-mcp/badge" alt="Woolworths Server MCP server" />
@@ -15,6 +15,7 @@ This is a continuation of [elijah-g/Woolworths-mcp](https://github.com/elijah-g/
 - **Product Search**: Search for products across the Woolworths catalog with filtering and sorting
 - **Product Details**: Get detailed information about specific products
 - **Specials & Deals**: Browse current specials and promotional offers
+- **Healthier Alternatives**: Rate additives from the ingredient list and find the cleanest products on the same shelf
 - **Category Browsing**: Explore product categories
 - **Shopping Cart**: Add items to cart, view cart contents, update quantities, and remove items
 
@@ -120,6 +121,25 @@ Get detailed information about a specific product by its stockcode.
 - `stockcode` (string, required): The product stockcode/ID
 - `detail` (string, optional): see [Response detail](#response-detail) (default: `nutrition`)
 
+### 6a. woolworths_find_healthier
+
+Find the healthier options for a shopping-list item: search, rate every result's additives, drop those above `maxRisk`, and rank the rest. See [Additive risk](#additive-risk).
+
+**Parameters:**
+- `searchTerm` (string, required): a plain product name - "chicken stock", not "500 mL chicken stock, salt-reduced"
+- `maxRisk` (string, optional): `none`, `watch`, `moderate` or `high` - the worst additive risk to keep (default: `moderate`, i.e. drop only `high`)
+- `limit` (number, optional): products to return (default: 5)
+- `candidates` (number, optional): search results to rate (default: 24, max: 36)
+- `sameShelf` (boolean, optional): compare only products on the same shelf as the top results (default: true)
+
+Returns `products` (slim, at `health` detail), `shelf`, and `excluded` - what was dropped and why. When nothing passes (cured meats, nearly always nitrite and phosphates), `leastBad` holds the closest.
+
+```json
+{"success":true,"rated":24,"shelf":["Stock & Gravy"],
+ "products":[{"stockcode":34559,"name":"Campbell's Real Stock Chicken 500mL","price":2.75,"cup":"$0.55 / 100ML","hsr":3,"health":{"risk":"none","additives":1}}],
+ "excluded":[{"name":"OXO Chicken Stock Cubes 71g","flagged":["E621 Monosodium glutamate: high","E150c Ammonia caramel: moderate"]}]}
+```
+
 ### 7. woolworths_get_specials
 
 Get current specials and deals from Woolworths.
@@ -184,7 +204,39 @@ Fields at their default are left out: `special`, `was` and `save` appear only on
 
 - `summary`: the fields above.
 - `nutrition`: adds `nutrition`, eight per-100g values (energyKj, protein, fat, satFat, carbs, sugars, fibre, sodium).
+- `health`: `nutrition`, plus `health` - the additive risk from the ingredient list (see [Additive risk](#additive-risk)).
 - `full`: the raw API payload, unchanged. For debugging.
+
+## Additive risk
+
+The `health` detail and `woolworths_find_healthier` rate a product the way apps like Yuka do: by its worst additive.
+
+```json
+"health":{"risk":"high","flagged":["E451 Triphosphates: high","E250 Sodium nitrite: high"],"additives":4}
+```
+
+- `risk`: the worst level found. `unknown` when Woolworths has no ingredient list for the product. Fresh fruit and vegetables have none either, and are `none` with `produce: true`.
+- `flagged`: rated additives, worst first.
+- `additives`: every additive recognised, rated or not.
+
+Levels:
+
+| Level | Meaning | Examples |
+| --- | --- | --- |
+| `high` | EFSA found a high risk of some consumers exceeding the safe intake | nitrites, sulphites, benzoates, sorbates, phosphates, carrageenan, MSG |
+| `moderate` | A lesser EFSA overexposure risk, or one of the six azo colours that carry an EU hyperactivity warning | ammonia caramel (150c), tartrazine (102), potassium chloride (508) |
+| `watch` | On the ANSES (France) 2019 list of additives of interest | acesulfame K, sucralose, 472e |
+| `none` | Assessed, no concern; or nothing rated was found | |
+
+Additives are found by number - Australian labels write "Emulsifier (471)", "Mineral Salts (450, 451)" - and by name ("Sodium Nitrite"). Numbers are INS codes, the same as EU E-numbers.
+
+The ratings are a table generated from the [Open Food Facts additives taxonomy](https://github.com/openfoodfacts/openfoodfacts-server/blob/main/taxonomies/additives.txt) (ODbL), which records the EFSA and ANSES assessments. Yuka's own grading has no public source. To refresh it:
+
+```bash
+npm run build:additives
+```
+
+This is a filter over published assessments, not dietary advice: an EFSA overexposure risk means some consumers may exceed the acceptable daily intake, not that one product is unsafe.
 
 ## Typical Workflow
 
