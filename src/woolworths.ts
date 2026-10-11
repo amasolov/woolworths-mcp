@@ -67,10 +67,16 @@ async function captureSession(): Promise<Session> {
     const userAgent = (await browser.userAgent()).replace("HeadlessChrome", "Chrome");
     const page = await browser.newPage();
     await page.setUserAgent(userAgent);
-    await page.goto(BASE_URL, {
-      waitUntil: "domcontentloaded",
-      timeout: NAVIGATION_TIMEOUT_MS,
-    });
+    // One retry: a navigation can fail on a blip that has nothing to do with
+    // Woolworths (net::ERR_NETWORK_CHANGED in a container that just started),
+    // and the browser is already up.
+    try {
+      await page.goto(BASE_URL, { waitUntil: "domcontentloaded", timeout: NAVIGATION_TIMEOUT_MS });
+    } catch (error) {
+      console.error(`[woolworths] homepage load failed, retrying once: ${(error as Error).message}`);
+      await new Promise((r) => setTimeout(r, 1000));
+      await page.goto(BASE_URL, { waitUntil: "domcontentloaded", timeout: NAVIGATION_TIMEOUT_MS });
+    }
     // The API accepts the cookies from about a second after DOMContentLoaded
     // (measured: Akamai's _abck never reaches its "validated" form in headless
     // Chromium, and does not need to). Give the page a short moment to settle,
