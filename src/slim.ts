@@ -1,7 +1,8 @@
 // Response slimming for Woolworths API payloads.
 // A raw search tile is ~11 KB (~3-4k tokens); a slim product is ~150 bytes.
 
-import { findAdditives, Risk } from "./additives.js";
+import { AdditiveReport, findAdditives, Risk } from "./additives.js";
+import { kindOf, Nutrients, num, nutriScore, yukaScore } from "./score.js";
 
 export type Detail = "summary" | "nutrition" | "health" | "full";
 
@@ -22,6 +23,10 @@ export interface SlimProduct {
 }
 
 export interface Health {
+  /** Yuka-style 0-100 (see src/score.ts). Absent without nutrition or ingredients. */
+  score?: number;
+  /** Nutri-Score as computed from the panel; fruit/veg share taken as 0. */
+  nutriScore?: string;
   /** Worst additive found; "unknown" when Woolworths has no ingredient list. */
   risk: Risk | "unknown";
   /** Rated additives, worst first: "E250 Sodium nitrite: high". */
@@ -30,6 +35,7 @@ export interface Health {
   additives?: number;
   /** Fresh fruit or vegetables: no ingredient list, nothing added. */
   produce?: true;
+  organic?: true;
 }
 
 // Woolworths fills a missing attribute with the string "None".
@@ -58,13 +64,45 @@ const jsonList = (v: unknown): string[] => {
 export const subcategoriesOf = (p: any): string[] =>
   [...new Set(jsonList(p?.AdditionalAttributes?.piessubcategorynamesjson))];
 
+// Organic by name ("Macro Organic") or by Woolworths' claims fields.
+function isOrganic(p: any): boolean {
+  const a = p?.AdditionalAttributes ?? {};
+  return /\borganic\b/i.test([p?.DisplayName, a.lifestyleanddietarystatement, a.lifestyleclaim, a.claims].join(" "));
+}
+
+export function nutrientsOf(p: any): Nutrients {
+  const n = parseNutrition(p?.AdditionalAttributes?.nutritionalinformation) ?? {};
+  return {
+    energyKj: num(n.energyKj),
+    sugars: num(n.sugars),
+    satFat: num(n.satFat),
+    fat: num(n.fat),
+    sodium: num(n.sodium),
+    protein: num(n.protein),
+    fibre: num(n.fibre),
+  };
+}
+
 export function healthOf(p: any): Health {
   const ingredients = ingredientsOf(p);
-  if (!ingredients) return isProduce(p) ? { risk: "none", produce: true } : { risk: "unknown" };
-  const r = findAdditives(ingredients);
-  const h: Health = { risk: r.risk };
-  if (r.flagged.length) h.flagged = r.flagged.map((a) => `${a.code} ${a.name}: ${a.risk}`);
-  if (r.count) h.additives = r.count;
+  const produce = !ingredients && isProduce(p);
+  const r: AdditiveReport | undefined = ingredients
+    ? findAdditives(ingredients)
+    : produce
+      ? { risk: "none", flagged: [], count: 0, keys: [] }
+      : undefined;
+
+  const h: Health = { risk: r ? r.risk : "unknown" };
+  const kind = kindOf(p);
+  const ns = nutriScore(nutrientsOf(p), kind, r?.keys, p?.DisplayName ?? p?.Name);
+  const organic = isOrganic(p);
+  // Yuka scores only what it can see in full: nutrition and ingredients both.
+  if (ns && r) h.score = yukaScore(ns, r, organic);
+  if (ns) h.nutriScore = ns.grade;
+  if (r?.flagged.length) h.flagged = r.flagged.map((a) => `${a.code} ${a.name}: ${a.risk}`);
+  if (r?.count) h.additives = r.count;
+  if (produce) h.produce = true;
+  if (organic) h.organic = true;
   return h;
 }
 

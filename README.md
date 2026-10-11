@@ -123,7 +123,7 @@ Get detailed information about a specific product by its stockcode.
 
 ### 6a. woolworths_find_healthier
 
-Find the healthier options for a shopping-list item: search, rate every result's additives, drop those above `maxRisk`, and rank the rest. See [Additive risk](#additive-risk).
+Find the healthier options for a shopping-list item: search, rate every result, drop those with additives above `maxRisk`, and rank the rest by score. See [Additive risk](#additive-risk).
 
 **Parameters:**
 - `searchTerm` (string, required): a plain product name - "chicken stock", not "500 mL chicken stock, salt-reduced"
@@ -136,7 +136,7 @@ Returns `products` (slim, at `health` detail), `shelf`, and `excluded` - what wa
 
 ```json
 {"success":true,"rated":24,"shelf":["Stock & Gravy"],
- "products":[{"stockcode":34559,"name":"Campbell's Real Stock Chicken 500mL","price":2.75,"cup":"$0.55 / 100ML","hsr":3,"health":{"risk":"none","additives":1}}],
+ "products":[{"stockcode":34559,"name":"Campbell's Real Stock Chicken 500mL","price":2.75,"cup":"$0.55 / 100ML","hsr":3,"health":{"score":75,"nutriScore":"A","risk":"none","additives":1}}],
  "excluded":[{"name":"OXO Chicken Stock Cubes 71g","flagged":["E621 Monosodium glutamate: high","E150c Ammonia caramel: moderate"]}]}
 ```
 
@@ -204,33 +204,47 @@ Fields at their default are left out: `special`, `was` and `save` appear only on
 
 - `summary`: the fields above.
 - `nutrition`: adds `nutrition`, eight per-100g values (energyKj, protein, fat, satFat, carbs, sugars, fibre, sodium).
-- `health`: `nutrition`, plus `health` - the additive risk from the ingredient list (see [Additive risk](#additive-risk)).
+- `health`: `nutrition`, plus `health` - a Yuka-style score, Nutri-Score and additive risk (see [Additive risk](#additive-risk)).
 - `full`: the raw API payload, unchanged. For debugging.
 
 ## Additive risk
 
-The `health` detail and `woolworths_find_healthier` rate a product the way apps like Yuka do: by its worst additive.
+The `health` detail and `woolworths_find_healthier` rate products the way Yuka does, from data Woolworths already returns: the nutrition panel and the ingredient list.
 
 ```json
-"health":{"risk":"high","flagged":["E451 Triphosphates: high","E250 Sodium nitrite: high"],"additives":4}
+"health":{"score":17,"nutriScore":"D","risk":"high","flagged":["E451 Triphosphates: high","E250 Sodium nitrite: high"],"additives":4}
 ```
 
-- `risk`: the worst level found. `unknown` when Woolworths has no ingredient list for the product. Fresh fruit and vegetables have none either, and are `none` with `produce: true`.
+- `score`: 0-100, Yuka's published formula (below). Absent when the nutrition panel or the ingredient list is missing.
+- `nutriScore`: the Nutri-Score grade, calculated from the nutrition panel.
+- `risk`: the worst additive found. `unknown` when Woolworths has no ingredient list. Fresh fruit and vegetables have none either, and are `none` with `produce: true`.
 - `flagged`: rated additives, worst first.
 - `additives`: every additive recognised, rated or not.
+- `organic`: by name or by Woolworths' claims fields.
 
-Levels:
+### Score
+
+As Yuka documents it ([food scoring](https://help.yuka.io/l/en/category/zlf9yu9htc-food-scoring)):
+
+- 60% nutrition: the Nutri-Score grade mapped onto A 100-75, B 75-55, C 55-35, D 35-10, E 10-0, placed linearly within the band by Nutri-Score points (Yuka does not publish where in the band).
+- 30% additives: 30 points, less 6 per `watch` additive, 15 per `moderate`, 30 per `high`.
+- 10% organic.
+- Capped at 49 by any `high` additive, and by a D or E Nutri-Score.
+
+Nutri-Score is the 2023 algorithm: general foods, beverages (including milk and plant drinks, with the sweetener penalty), fats and oils, cheese, and the red-meat protein cap, chosen from Woolworths' shelf categories. The fruit, vegetable and legume share is not in Woolworths' data and is taken as zero - except olive, canola and walnut oil, which count wholly - so a fruit-heavy product can grade one step harsher than on its pack.
+
+### Additive levels
 
 | Level | Meaning | Examples |
 | --- | --- | --- |
-| `high` | EFSA found a high risk of some consumers exceeding the safe intake | nitrites, sulphites, benzoates, sorbates, phosphates, carrageenan, MSG |
-| `moderate` | A lesser EFSA overexposure risk, or one of the six azo colours that carry an EU hyperactivity warning | ammonia caramel (150c), tartrazine (102), potassium chloride (508) |
+| `high` | EFSA found a high risk of some consumers exceeding the safe intake; IARC Group 1 or 2A; or EFSA no longer considers it safe | nitrites, sulphites, benzoates, sorbates, phosphates, carrageenan, MSG, titanium dioxide (171) |
+| `moderate` | A lesser EFSA overexposure risk; IARC Group 2B; or one of the six azo colours that carry an EU hyperactivity warning | aspartame (951), BHA (320), ammonia caramels (150c, 150d), tartrazine (102), potassium chloride (508) |
 | `watch` | On the ANSES (France) 2019 list of additives of interest | acesulfame K, sucralose, 472e |
 | `none` | Assessed, no concern; or nothing rated was found | |
 
 Additives are found by number - Australian labels write "Emulsifier (471)", "Mineral Salts (450, 451)" - and by name ("Sodium Nitrite"). Numbers are INS codes, the same as EU E-numbers.
 
-The ratings are a table generated from the [Open Food Facts additives taxonomy](https://github.com/openfoodfacts/openfoodfacts-server/blob/main/taxonomies/additives.txt) (ODbL), which records the EFSA and ANSES assessments. Yuka's own grading has no public source. To refresh it:
+The table is generated from the [Open Food Facts additives taxonomy](https://github.com/openfoodfacts/openfoodfacts-server/blob/main/taxonomies/additives.txt) (ODbL), which records the EFSA and ANSES assessments. IARC classifications and the titanium dioxide reversal are not in it; `scripts/build-additives.mjs` adds them, each with its monograph or regulation. Yuka's own ratings are not published as data. To refresh:
 
 ```bash
 npm run build:additives

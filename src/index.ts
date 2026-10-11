@@ -133,8 +133,8 @@ const TOOLS: Tool[] = [
     name: "woolworths_find_healthier",
     description:
       "Find the healthier options for a shopping-list item. Searches Woolworths, rates each product's additives from its ingredient list " +
-      "(EFSA overexposure and ANSES assessments, as used by apps like Yuka), drops those above maxRisk, and ranks the rest: " +
-      "fewest risky additives, then Health Star Rating, then unit price. Use a plain product name as the term " +
+      "(EFSA, IARC and ANSES assessments), drops those above maxRisk, and ranks the rest by a Yuka-style 0-100 score " +
+      "(60% Nutri-Score, 30% additives, 10% organic; any high-risk additive caps it at 49), then unit price. Use a plain product name as the term " +
       '("chicken stock", not "500 mL chicken stock, salt-reduced"). Fresh produce has no ingredient list and comes back as risk "unknown". ' +
       "Requires session cookies to be obtained first.",
     inputSchema: {
@@ -509,16 +509,18 @@ async function handleFindHealthier(args: any): Promise<any> {
     const kept = comparable.filter((r) => riskRank(r.health.risk) <= riskRank(maxRisk));
     const excluded = comparable.filter((r) => riskRank(r.health.risk) > riskRank(maxRisk));
 
-    // Rated-and-passing before unknown (no ingredient list: fresh food, or
-    // Woolworths simply lacks the data). Within each: lower risk, more health
-    // stars (none counts as 0), cheaper per unit when units match.
     const hsr = (p: any) => parseFloat(p.AdditionalAttributes?.healthstarrating) || 0;
     const unit = (p: any) => (typeof p.CupPrice === "number" && p.CupPrice > 0 ? p.CupPrice : Infinity);
     // How many additives sit at the worst level found - so among the
     // excluded, one nitrite beats nitrite plus three phosphates.
     const worstCount = (h: ReturnType<typeof healthOf>) =>
       h.flagged?.filter((f) => f.endsWith(`: ${h.risk}`)).length ?? 0;
+    // The Yuka-style score leads. Fresh produce without a nutrition panel
+    // has nothing to score but nothing added either; it goes first. Without
+    // a score, fall back to risk, then health stars, then unit price.
+    const score = (h: ReturnType<typeof healthOf>) => h.score ?? (h.produce ? 101 : -1);
     const byHealth = (a: (typeof rated)[0], b: (typeof rated)[0]) =>
+      score(b.health) - score(a.health) ||
       Number(a.health.risk === "unknown") - Number(b.health.risk === "unknown") ||
       riskRank(a.health.risk) - riskRank(b.health.risk) ||
       worstCount(a.health) - worstCount(b.health) ||

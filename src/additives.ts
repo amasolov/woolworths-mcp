@@ -22,6 +22,8 @@ export interface AdditiveReport {
   flagged: FoundAdditive[];
   /** Every additive recognised, rated or not. */
   count: number;
+  /** Code keys of everything recognised ("E950", "E450III"). */
+  keys: string[];
 }
 
 // "E450III" -> "E450(iii)" for display.
@@ -86,7 +88,7 @@ export function findAdditives(ingredients: string): AdditiveReport {
   });
   const rank = (a: FoundAdditive) => (a.risk ? RISKS.indexOf(a.risk) : -1);
   const flagged = found.filter((a) => rank(a) >= 1).sort((a, b) => rank(b) - rank(a));
-  return { risk: flagged[0]?.risk ?? "none", flagged, count: found.length };
+  return { risk: flagged[0]?.risk ?? "none", flagged, count: found.length, keys: [...keys] };
 }
 
 export const riskRank = (r?: Risk | "unknown") => (r && r !== "unknown" ? RISKS.indexOf(r) : -1);

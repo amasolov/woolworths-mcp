@@ -68,14 +68,41 @@ for (const block of text.split(/\n\s*\n/)) {
   entries.set(codeKey(code), { code, label, risk, aliases });
 }
 
-// The "Southampton six" azo colours. EFSA rates them by ADI, not by
-// overexposure, so the taxonomy leaves them unassessed - but EU law makes
-// them carry "may have an adverse effect on activity and attention in
-// children" (Regulation 1333/2008, Annex V), and Australia permits them with
-// no warning at all. Moderate, the same as the apps that flag them.
-for (const k of ["E102", "E104", "E110", "E122", "E124", "E129"]) {
-  const e = entries.get(k);
-  if (e) e.risk = Math.max(e.risk, 2);
+// Assessments the taxonomy does not record. Yuka names IARC alongside EFSA
+// as a source, and the taxonomy carries neither IARC classifications nor
+// EFSA's titanium dioxide reversal, so those additives came out too mild.
+// The rule: IARC Group 1 or 2A, or EFSA finding an additive no longer safe,
+// is high; IARC 2B or an EU warning label is moderate. Never lowers a rating.
+const OVERRIDES = [
+  // EFSA 2021: "can no longer be considered safe as a food additive"
+  // (genotoxicity could not be ruled out); banned in the EU from 2022 by
+  // Regulation 2022/63. Still permitted in Australia.
+  [3, ["E171"]],
+  // IARC Group 2A: ingested nitrate or nitrite under conditions that result
+  // in endogenous nitrosation (Monograph 94, 2010). Already high from EFSA;
+  // listed so the reason is on record.
+  [3, ["E249", "E250", "E251", "E252"]],
+  // IARC Group 2B: butylated hydroxyanisole (Monograph 40, 1986).
+  [2, ["E320"]],
+  // IARC Group 2B: aspartame (Monograph 134, 2023).
+  [2, ["E951"]],
+  // IARC Group 2B: 4-methylimidazole (Monograph 101, 2013), formed in the
+  // ammonia caramels.
+  [2, ["E150C", "E150D"]],
+  // IARC Group 2B: potassium bromate (Monograph 73, 1999). Not permitted in
+  // Australia, but imports turn up.
+  [2, ["E924"]],
+  // The "Southampton six" azo colours. EU law makes them carry "may have an
+  // adverse effect on activity and attention in children" (Regulation
+  // 1333/2008, Annex V); Australia permits them with no warning at all.
+  [2, ["E102", "E104", "E110", "E122", "E124", "E129"]],
+];
+for (const [risk, codes] of OVERRIDES) {
+  for (const k of codes) {
+    const e = entries.get(k);
+    if (!e) throw new Error(`override names ${k}, which the taxonomy no longer has`);
+    e.risk = Math.max(e.risk, risk);
+  }
 }
 
 // EFSA mostly rates a group (E450, diphosphates) and not each member
