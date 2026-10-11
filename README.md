@@ -250,6 +250,16 @@ The table is generated from the [Open Food Facts additives taxonomy](https://git
 npm run build:additives
 ```
 
+### Local ratings
+
+`WOOLWORTHS_ADDITIVE_OVERRIDES` names a JSON file of extra ratings, applied on top of the bundled table at startup:
+
+```json
+{ "high": ["E471", "E551"], "moderate": ["E960"], "watch": [] }
+```
+
+Use it for ratings you may use but not redistribute - another app's list under a personal-use licence - or for a stricter view of your own. Overrides only ever raise a rating, and cover a code's sub-variants (`E339` raises `E339(i)`-`(iii)`). A file that is set but unreadable, or that names an unknown code, stops the server rather than leaving it rating more leniently than intended.
+
 This is a filter over published assessments, not dietary advice: an EFSA overexposure risk means some consumers may exceed the acceptable daily intake, not that one product is unsafe.
 
 ## Typical Workflow

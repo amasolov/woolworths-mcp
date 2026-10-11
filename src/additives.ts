@@ -4,10 +4,51 @@
 // The ratings come from src/additives-data.ts (Open Food Facts, see
 // scripts/build-additives.mjs for what each level means and where it is from).
 
+import { readFileSync } from "node:fs";
 import { ADDITIVES, ALIASES } from "./additives-data.js";
 
 export type Risk = "high" | "moderate" | "watch" | "none";
 const RISKS: Risk[] = ["none", "watch", "moderate", "high"];
+
+// Local ratings on top of the bundled table, from the JSON file named by
+// WOOLWORTHS_ADDITIVE_OVERRIDES:
+//
+//   { "high": ["E471", "E551"], "moderate": ["E960"], "watch": [] }
+//
+// For ratings that are yours to use but not to publish - another app's list
+// under a personal-use licence, say - or your own stricter view. They only
+// ever raise a rating, and cover a code's sub-variants too (E339 raises
+// E339(i)-(iii)). A file that is set but unreadable, or names a code the
+// table does not know, stops the server: carrying on would quietly rate
+// everything more leniently than intended.
+function applyOverrides(path: string): number {
+  const raw = JSON.parse(readFileSync(path, "utf8"));
+  let n = 0;
+  for (const level of ["watch", "moderate", "high"] as const) {
+    const codes = raw[level] ?? [];
+    if (!Array.isArray(codes)) throw new Error(`${path}: "${level}" must be a list of codes`);
+    const r = RISKS.indexOf(level);
+    for (const c of codes) {
+      const k = "E" + String(c).toUpperCase().replace(/^E/, "").replace(/[^0-9A-Z]/g, "");
+      if (!ADDITIVES[k]) throw new Error(`${path}: unknown additive ${c}`);
+      for (const key of Object.keys(ADDITIVES)) {
+        if (key !== k && !(key.startsWith(k) && /^[A-HIVX]+$/.test(key.slice(k.length)))) continue;
+        const e = ADDITIVES[key];
+        if ((e[1] ?? -1) < r) {
+          e[1] = r;
+          n++;
+        }
+      }
+    }
+  }
+  return n;
+}
+
+const overrides = process.env.WOOLWORTHS_ADDITIVE_OVERRIDES;
+if (overrides) {
+  const n = applyOverrides(overrides);
+  console.error(`Additive overrides from ${overrides}: ${n} ratings raised`);
+}
 
 export interface FoundAdditive {
   code: string;   // "E250"
