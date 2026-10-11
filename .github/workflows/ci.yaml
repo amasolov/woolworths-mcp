@@ -2,7 +2,7 @@
 # yaml-language-server: $schema=https://json.schemastore.org/github-workflow.json
 name: CI
 
-# Type-checks and builds from the committed lockfile. The image itself is
+# Builds from the committed lockfile and runs the fixture tests. The image itself is
 # built and verified in ktmb1/containers (woolworths-mcp/), from a release tag
 # of this repo.
 on:
@@ -28,4 +28,4 @@ jobs:
       - run: npm ci --no-audit --no-fund
         env:
           PUPPETEER_SKIP_DOWNLOAD: "1"
-      - run: npm run build
+      - run: npm test
