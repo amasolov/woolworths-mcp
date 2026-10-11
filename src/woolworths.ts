@@ -21,7 +21,7 @@ export const BASE_URL = "https://www.woolworths.com.au";
 const MIN_REFRESH_INTERVAL_MS = 60_000;
 
 const NAVIGATION_TIMEOUT_MS = 45_000;
-const SETTLE_TIMEOUT_MS = 15_000;
+const SETTLE_TIMEOUT_MS = 3_000;
 
 interface Session {
   cookieHeader: string;
@@ -71,10 +71,11 @@ async function captureSession(): Promise<Session> {
       waitUntil: "domcontentloaded",
       timeout: NAVIGATION_TIMEOUT_MS,
     });
-    // Akamai's script sets the cookies that matter once it has run, so give
-    // the page a moment to go quiet - but only a moment. The homepage keeps
-    // trackers polling, and waiting for networkidle outright occasionally
-    // never finished; whatever cookies exist by then are taken.
+    // The API accepts the cookies from about a second after DOMContentLoaded
+    // (measured: Akamai's _abck never reaches its "validated" form in headless
+    // Chromium, and does not need to). Give the page a short moment to settle,
+    // but no more: it keeps trackers polling, so networkidle can take 15s or
+    // never come, and waiting for it once made the first call time out.
     await page.waitForNetworkIdle({ idleTime: 500, timeout: SETTLE_TIMEOUT_MS }).catch(() => {});
     const cookies = await page.cookies();
     if (cookies.length === 0) {
