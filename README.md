@@ -1,127 +1,78 @@
 # Woolworths MCP Server
 
-A Model Context Protocol (MCP) server for interacting with Woolworths Australia's online shopping platform. This server provides tools for browsing products, searching items, viewing specials, and more.
+A Model Context Protocol (MCP) server for Woolworths Australia: product search, prices, unit prices, specials, nutrition, additive risk and categories.
 
-This is a continuation of [elijah-g/Woolworths-mcp](https://github.com/elijah-g/Woolworths-mcp), keeping its history. Differences so far: slim product responses (see [Response detail](#response-detail)), additive risk ratings and a healthier-alternative search (see [Additive risk](#additive-risk)), a headless browser by default, and a committed lockfile. Releases are tagged `vX.Y.Z`.
+This continues [elijah-g/Woolworths-mcp](https://github.com/elijah-g/Woolworths-mcp), keeping its history. Releases are tagged `vX.Y.Z`.
 
 <a href="https://glama.ai/mcp/servers/@elijah-g/Woolworths-mcp">
   <img width="380" height="200" src="https://glama.ai/mcp/servers/@elijah-g/Woolworths-mcp/badge" alt="Woolworths Server MCP server" />
 </a>
 
-## Features
+## How it works
 
-- **Browser Automation**: Uses Puppeteer to open a browser, navigate to Woolworths, and capture session cookies
-- **Session Management**: Maintains session cookies for authenticated API requests
-- **Product Search**: Search for products across the Woolworths catalog with filtering and sorting
-- **Product Details**: Get detailed information about specific products
-- **Specials & Deals**: Browse current specials and promotional offers
-- **Healthier Alternatives**: Rate additives from the ingredient list and find the cleanest products on the same shelf
-- **Category Browsing**: Explore product categories
-- **Shopping Cart**: Add items to cart, view cart contents, update quantities, and remove items
+Woolworths' web APIs sit behind bot protection: a request needs the cookies a real browser picks up on the homepage. The server handles that itself. The first tool call launches headless Chromium (through Puppeteer), loads the homepage, keeps the cookies and closes the browser. Later calls reuse the cookies. When Woolworths answers 403 the cookies are refreshed once and the call retried. If they were refreshed less than a minute ago, the call fails at once instead of launching another browser.
 
-## Installation
+The first call takes a few seconds; later ones are API round trips.
 
-1. Install dependencies:
+The session is anonymous. It is enough for the catalogue, but not tied to anyone's Woolworths account.
+
+## Running it
 
 ```bash
-npm install
-```
-
-2. Build the TypeScript code:
-
-```bash
+npm ci
 npm run build
 ```
 
-## Usage
-
-### Running the Server
-
-The MCP server runs on stdio and is designed to be used with MCP-compatible clients (like Claude Desktop, Cline, or other AI assistants).
-
-```bash
-npm start
-```
-
-### Configuration for Claude Desktop
-
-Add this to your Claude Desktop configuration file:
-
-**Windows**: `%APPDATA%\Claude\claude_desktop_config.json`
-**macOS**: `~/Library/Application Support/Claude/claude_desktop_config.json`
+### stdio (desktop clients)
 
 ```json
 {
   "mcpServers": {
     "woolworths": {
       "command": "node",
-      "args": ["C:\\Users\\eglass\\Projects\\Woolworths\\dist\\index.js"]
+      "args": ["/path/to/woolworths-mcp/dist/index.js"]
     }
   }
 }
 ```
 
-Make sure to update the path to match your installation directory.
+### Streamable HTTP
 
-## Available Tools
-
-### 1. woolworths_open_browser
-
-Opens a browser and navigates to the Woolworths website. This is typically the first step to establish a session.
-
-The browser is headless. Set `WOOLWORTHS_HEADLESS=false` in the server's environment to get a visible one, e.g. to log in by hand on a desktop.
-
-**Parameters:** None
-
-### 2. woolworths_navigate
-
-Navigate to a specific URL on the Woolworths website.
-
-**Parameters:**
-- `url` (string, required): The URL to navigate to
-
-### 3. woolworths_get_cookies
-
-Retrieves and stores session cookies from the current browser session. Run this after logging in or when you have an active session.
-
-**Parameters:** None
-
-### 4. woolworths_close_browser
-
-Closes the browser instance while preserving the captured session cookies.
-
-**Parameters:** None
-
-### 5. woolworths_search_products
-
-Search for products on Woolworths.
-
-**Parameters:**
-- `searchTerm` (string, required): The product search term
-- `pageNumber` (number, optional): Page number (default: 1)
-- `pageSize` (number, optional): Number of results to return (default: 10)
-- `sortType` (string, optional): `TraderRelevance`, `PriceAsc`, `PriceDesc` or `Name`
-- `isSpecial` (boolean, optional): Specials only (default: false)
-- `includeSponsored` (boolean, optional): Keep the sponsored ads Woolworths injects into results (default: false)
-- `detail` (string, optional): see [Response detail](#response-detail) (default: `summary`)
-
-**Example:**
-```json
-{
-  "searchTerm": "milk",
-  "pageSize": 10
-}
+```bash
+MCP_TRANSPORT=http PORT=8000 node dist/index.js
 ```
 
-### 6. woolworths_get_product_details
+MCP is served at `POST /mcp` and a health check at `GET /healthz`. The server is stateless: no `mcp-session-id` is issued and each request stands alone. Nothing needs to survive between requests except the cookies, and those are per process, so a restart cannot leave a client holding a session id the server no longer knows.
 
-Get detailed information about a specific product by its stockcode.
+There is no authentication. Put it behind something that has some.
 
-**Parameters:**
-- `stockcode` (string, required): The product stockcode/ID
-- `detail` (string, optional): see [Response detail](#response-detail) (default: `nutrition`)
+### Environment
 
-### 6a. woolworths_find_healthier
+| Variable | Default | |
+| --- | --- | --- |
+| `MCP_TRANSPORT` | `stdio` | `stdio` or `http` |
+| `PORT` | `8000` | HTTP port |
+| `WOOLWORTHS_HEADLESS` | `true` | `false` shows the browser while it collects cookies |
+| `WOOLWORTHS_ENABLE_CART` | `false` | `true` adds the cart tools (see below) |
+| `PUPPETEER_EXECUTABLE_PATH` | Puppeteer's Chrome | use a system Chromium instead |
+
+## Tools
+
+### woolworths_search_products
+
+- `searchTerm` (string, required)
+- `pageNumber` (default 1), `pageSize` (1-36, default 10)
+- `sortType`: `TraderRelevance` (default), `PriceAsc`, `PriceDesc`, `Name`
+- `isSpecial`: specials only (default false)
+- `includeSponsored`: keep the sponsored ads Woolworths injects into results (default false)
+- `detail`: see [Response detail](#response-detail) (default `summary`)
+
+### woolworths_get_product_details
+
+- `stockcode` (string, required)
+- `detail` (default `nutrition`)
+
+### woolworths_find_healthier
 
 Find the healthier options for a shopping-list item: search, rate every result's additives, drop those above `maxRisk`, and rank the rest. See [Additive risk](#additive-risk).
 
@@ -135,77 +86,49 @@ Find the healthier options for a shopping-list item: search, rate every result's
 Returns `products` (slim, at `health` detail), `shelf`, and `excluded` - what was dropped and why. When nothing passes (cured meats, nearly always nitrite and phosphates), `leastBad` holds the closest.
 
 ```json
-{"success":true,"rated":24,"shelf":["Stock & Gravy"],
+{"rated":24,"shelf":["Stock & Gravy"],
  "products":[{"stockcode":34559,"name":"Campbell's Real Stock Chicken 500mL","price":2.75,"cup":"$0.55 / 100ML","hsr":3,"health":{"risk":"none","additives":1}}],
  "excluded":[{"name":"OXO Chicken Stock Cubes 71g","flagged":["E621 Monosodium glutamate: high","E150c Ammonia caramel: moderate"]}]}
 ```
 
-### 7. woolworths_get_specials
+### woolworths_get_specials
 
-Get current specials and deals from Woolworths.
+- `type`: a special type such as `half-price`, `lower-shelf-price`, `buy-more-save-more`, `everyday-low-price` or `seasonal-price`. `woolworths_get_categories` lists the current ones as `specialTypes`.
+- `category`: a department id or path, e.g. `fruit-veg`
+- `pageNumber`, `pageSize` (1-36, default 20), `detail`
 
-**Parameters:**
-- `category` (string, optional): Category filter (e.g., 'fruit-veg', 'meat-seafood')
-- `pageSize` (number, optional): Number of results to return (default: 20)
-- `detail` (string, optional): see [Response detail](#response-detail) (default: `summary`)
+With `type` only you get that kind of special, and with `category` only you get that department's specials. Both together give one kind of special within one department, and neither gives `half-price`.
 
-### 8. woolworths_get_categories
+### woolworths_get_categories
 
-Get the list of available product categories.
+- `parent`: a category id or path. Omit it for the departments.
 
-**Parameters:** None
+Returns one level of the category tree, along with the special types. The full tree is about 2,600 nodes (870 KB), so the server caches it for 6 hours and never returns all of it.
 
-### 9. woolworths_add_to_cart
+### Cart tools (off by default)
 
-Add a product to the shopping cart/trolley.
-
-**Parameters:**
-- `stockcode` (number, required): The product stockcode/ID
-- `quantity` (number, optional): Quantity to add (default: 1)
-
-**Example:**
-```json
-{
-  "stockcode": 123456,
-  "quantity": 2
-}
-```
-
-### 10. woolworths_get_cart
-
-Get the current contents of the shopping cart/trolley.
-
-**Parameters:** None
-
-### 11. woolworths_remove_from_cart
-
-Remove a product from the shopping cart/trolley.
-
-**Parameters:**
-- `stockcode` (number, required): The product stockcode/ID to remove
-
-### 12. woolworths_update_cart_quantity
-
-Update the quantity of a product in the shopping cart/trolley.
-
-**Parameters:**
-- `stockcode` (number, required): The product stockcode/ID
-- `quantity` (number, required): New quantity
+`woolworths_add_to_cart`, `woolworths_get_cart`, `woolworths_remove_from_cart` and `woolworths_update_cart_quantity` exist only with `WOOLWORTHS_ENABLE_CART=true`. They change state, and with the anonymous session they fill a trolley nobody can see.
 
 ## Response detail
 
 The raw Woolworths payload is about 11 KB (3-4k tokens) per product, so the product tools return a slim shape instead:
 
 ```json
-{"stockcode":123456,"name":"Woolworths Full Cream Milk 2L","price":3.3,"cup":"$1.65 / 1L","promo":"Range was $3.50","hsr":4}
+{"stockcode":888140,"name":"Woolworths Full Cream Milk 3L","price":4.95,"cup":"$1.65 / 1L","hsr":4}
 ```
 
-Fields at their default are left out: `special`, `was` and `save` appear only on a special, `promo` only when there is promotion text (multibuys and "lower shelf price" deals are not `special`), `hsr` only when the product has a health star rating, and `unavailable` / `sponsored` only when true.
+Fields at their default are left out:
+- `special`, `was` and `save` appear only on a special.
+- `promo` appears only when there is promotion text. Multibuys ("2 for $4.50") and lower-shelf-price deals are not flagged `special`, so `promo` is where they show up.
+- `hsr` appears only for products with a health star rating.
+- `unavailable` and `sponsored` appear only when true.
 
 - `summary`: the fields above.
 - `nutrition`: adds `nutrition`, eight per-100g values (energyKj, protein, fat, satFat, carbs, sugars, fibre, sodium).
 - `health`: `nutrition`, plus `health` - the additive risk from the ingredient list (see [Additive risk](#additive-risk)).
 - `full`: the raw API payload, unchanged. For debugging.
+
+Errors come back as an MCP error result (`isError: true`) with `{"error": "..."}`.
 
 ## Additive risk
 
@@ -238,107 +161,14 @@ npm run build:additives
 
 This is a filter over published assessments, not dietary advice: an EFSA overexposure risk means some consumers may exceed the acceptable daily intake, not that one product is unsafe.
 
-## Typical Workflow
-
-1. **Open Browser**: Use `woolworths_open_browser` to launch a browser window
-2. **Log In** (if needed): with `WOOLWORTHS_HEADLESS=false` the browser is visible, so you can log in to your Woolworths account by hand
-3. **Capture Cookies**: Use `woolworths_get_cookies` to capture session cookies
-4. **Close Browser**: Use `woolworths_close_browser` to close the browser (cookies are preserved)
-5. **Use API Tools**: Now you can use any of the API tools (search, get product details, etc.)
-
-## Example Usage Scenario
-
-```
-1. User: "Open the Woolworths browser"
-   → Calls: woolworths_open_browser
-   
-2. User manually logs in on the opened browser (if needed)
-
-3. User: "Get the session cookies"
-   → Calls: woolworths_get_cookies
-   
-4. User: "Close the browser"
-   → Calls: woolworths_close_browser
-   
-5. User: "Search for bananas"
-   → Calls: woolworths_search_products with searchTerm="bananas"
-   
-6. User: "What are the current specials?"
-   → Calls: woolworths_get_specials
-
-7. User: "Add product 123456 to my cart"
-   → Calls: woolworths_add_to_cart with stockcode=123456
-
-8. User: "Show me my cart"
-   → Calls: woolworths_get_cart
-```
-
-## Technical Details
-
-### Browser Automation
-
-The server uses Puppeteer to:
-- Launch a Chromium browser instance
-- Navigate to Woolworths website
-- Capture cookies from the browser session
-- Maintain user agent and browser fingerprint
-
-### API Integration
-
-Once cookies are captured, the server makes authenticated requests to Woolworths' internal APIs:
-- Search API: `/apis/ui/Search/products` (POST)
-- Product Detail API: `/apis/ui/product/detail/{stockcode}`
-- Browse/Category API: `/apis/ui/browse/category`
-- Categories API: `/apis/ui/PiesCategoriesWithSpecials`
-- Shopping Cart API: `/apis/ui/Trolley/*` (AddItem, RemoveItem, UpdateItem, Get)
-
-### Session Management
-
-Session cookies are stored in memory for the duration of the server process. If the server restarts, you'll need to recapture cookies by opening the browser again.
-
 ## Development
 
-### Watch Mode
-
-For development with auto-recompilation:
-
 ```bash
-npm run dev
+npm test        # build, then the fixture tests
+npm run dev     # tsc --watch
 ```
 
-### Building
-
-```bash
-npm run build
-```
-
-## Requirements
-
-- Node.js 18 or higher
-- npm or yarn
-- Chromium/Chrome (automatically installed by Puppeteer)
-
-## Notes
-
-- The browser is headless by default; `WOOLWORTHS_HEADLESS=false` makes it visible for manual login
-- Session cookies are stored in memory and persist until the server is restarted
-- API endpoints are based on Woolworths' public web interface and may change
-- Always respect Woolworths' Terms of Service when using this tool
-
-## Troubleshooting
-
-### Browser won't open
-- Check that Puppeteer installed correctly
-- On a machine without a display, make sure `WOOLWORTHS_HEADLESS` is not set to `false`
-
-### API requests fail
-- Ensure you've captured cookies with `woolworths_get_cookies`
-- Check that the session hasn't expired (you may need to re-open browser and capture new cookies)
-- Verify the API endpoints are still valid
-
-### Connection issues
-- Ensure you have a stable internet connection
-- Check that Woolworths website is accessible from your location
+`test/fixtures/` holds real responses from an anonymous session, trimmed to the fields the code reads. [woolworths-api-docs.md](woolworths-api-docs.md) has notes on the endpoints.
 
 ## License
 
