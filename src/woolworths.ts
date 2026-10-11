@@ -20,12 +20,13 @@ export const BASE_URL = "https://www.woolworths.com.au";
 // a browser per request.
 const MIN_REFRESH_INTERVAL_MS = 60_000;
 
-const NAVIGATION_TIMEOUT_MS = 60_000;
+const NAVIGATION_TIMEOUT_MS = 45_000;
+const SETTLE_TIMEOUT_MS = 15_000;
 
 interface Session {
   cookieHeader: string;
-  // The browser's own user agent, minus "Headless". Akamai checks that the
-  // API requests come from the same browser that earned the cookies.
+  // The browser's own user agent, minus "Headless", used for the API calls
+  // too, so they present as the client that earned the cookies.
   userAgent: string;
   capturedAt: number;
 }
@@ -33,6 +34,7 @@ interface Session {
 let session: Session | null = null;
 let pending: Promise<Session> | null = null;
 let lastAttempt = 0;
+let lastError = "";
 let capture: () => Promise<Session> = captureSession;
 
 export class WoolworthsError extends Error {
@@ -66,9 +68,14 @@ async function captureSession(): Promise<Session> {
     const page = await browser.newPage();
     await page.setUserAgent(userAgent);
     await page.goto(BASE_URL, {
-      waitUntil: "networkidle2",
+      waitUntil: "domcontentloaded",
       timeout: NAVIGATION_TIMEOUT_MS,
     });
+    // Akamai's script sets the cookies that matter once it has run, so give
+    // the page a moment to go quiet - but only a moment. The homepage keeps
+    // trackers polling, and waiting for networkidle outright occasionally
+    // never finished; whatever cookies exist by then are taken.
+    await page.waitForNetworkIdle({ idleTime: 500, timeout: SETTLE_TIMEOUT_MS }).catch(() => {});
     const cookies = await page.cookies();
     if (cookies.length === 0) {
       throw new WoolworthsError("Woolworths homepage set no cookies");
@@ -94,14 +101,23 @@ async function getSession(forceRefresh = false): Promise<Session> {
   // not do better - that includes a capture that failed outright.
   const sinceLast = Date.now() - lastAttempt;
   if (sinceLast < MIN_REFRESH_INTERVAL_MS) {
+    const why = lastError ? `: ${lastError}` : " (Woolworths refused its cookies)";
     throw new WoolworthsError(
-      `Could not get a working Woolworths session (last attempt ${Math.round(sinceLast / 1000)}s ago); try again in a minute.`
+      `No working Woolworths session${why}. Last attempt ${Math.round(sinceLast / 1000)}s ago; try again in a minute.`
     );
   }
 
   lastAttempt = Date.now();
   pending = capture()
-    .then((s) => (session = s))
+    .then((s) => {
+      lastError = "";
+      return (session = s);
+    })
+    .catch((error) => {
+      lastError = error instanceof Error ? error.message : String(error);
+      console.error(`[woolworths] cookie capture failed: ${lastError}`);
+      throw error;
+    })
     .finally(() => {
       pending = null;
     });
@@ -160,5 +176,6 @@ export function _resetForTests(fake?: () => Promise<Session>) {
   session = null;
   pending = null;
   lastAttempt = 0;
+  lastError = "";
   capture = fake ?? captureSession;
 }

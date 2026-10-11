@@ -177,3 +177,13 @@ test("a 401 is reported, not refreshed - it needs an account", async () => {
   await assert.rejects(callTool("woolworths_get_product_details", { stockcode: "888140" }), /401/);
   assert.equal(captures, 1);
 });
+
+test("a failed capture is reported, and its reason repeated until a retry is allowed", async () => {
+  _resetForTests(async () => {
+    captures++;
+    throw new Error("Navigation timeout of 45000 ms exceeded");
+  });
+  await assert.rejects(callTool("woolworths_get_product_details", { stockcode: "888140" }), /Navigation timeout/);
+  await assert.rejects(callTool("woolworths_get_product_details", { stockcode: "888140" }), /No working Woolworths session: Navigation timeout.*try again/);
+  assert.equal(captures, 1);
+});
