@@ -2,8 +2,7 @@
   "mcpServers": {
     "woolworths": {
       "command": "node",
-      "args": ["C:\\Users\\eglass\\Projects\\Woolworths\\dist\\index.js"]
+      "args": ["/path/to/woolworths-mcp/dist/index.js"]
     }
   }
 }
-
