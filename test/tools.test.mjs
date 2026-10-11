@@ -8,7 +8,7 @@ import { test, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
-const { callTool, toolDefinitions } = await import("../dist/tools.js");
+const { callTool, toolDefinitions, _resetProductsForTests } = await import("../dist/tools.js");
 const { _resetForTests } = await import("../dist/woolworths.js");
 const { findAdditives } = await import("../dist/additives.js");
 
@@ -27,6 +27,8 @@ let statuses;
 
 const json = (status, body) => new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
 
+// The fake Woolworths API. The fake browser session below sends through it, so
+// a test can swap globalThis.fetch to watch or delay calls.
 globalThis.fetch = async (url, init) => {
   const { pathname } = new URL(url);
   requests.push({ path: pathname, body: init.body ? JSON.parse(init.body) : undefined, cookie: init.headers.Cookie });
@@ -38,15 +40,33 @@ globalThis.fetch = async (url, init) => {
   return body ? json(200, body) : json(404, {});
 };
 
+// A fake browser session: opening it or reloading it counts as a capture,
+// and its calls carry the capture number as their cookie.
+const fakeSession = async () => {
+  captures++;
+  await new Promise((r) => setTimeout(r, 10));
+  return {
+    async send(path, method, body) {
+      const r = await globalThis.fetch(`https://www.woolworths.com.au${path}`, {
+        method,
+        body,
+        headers: { Cookie: `capture=${captures}` },
+      });
+      return { status: r.status, text: await r.text() };
+    },
+    async reload() {
+      captures++;
+    },
+    async close() {},
+  };
+};
+
 beforeEach(() => {
   requests = [];
   captures = 0;
   statuses = [];
-  _resetForTests(async () => {
-    captures++;
-    await new Promise((r) => setTimeout(r, 10));
-    return { cookieHeader: `capture=${captures}`, userAgent: "test", capturedAt: Date.now() };
-  });
+  _resetForTests(fakeSession);
+  _resetProductsForTests();
 });
 
 test("only the catalogue tools are listed by default", () => {
@@ -264,7 +284,7 @@ test("find_healthier rates 12 candidates by default", async () => {
 });
 
 test("calls are paced: at most two at once, starts spaced out", async () => {
-  _resetForTests(async () => ({ cookieHeader: "c", userAgent: "t", capturedAt: Date.now() }), { minSpacingMs: 40 });
+  _resetForTests(fakeSession, { minSpacingMs: 40 });
   let active = 0;
   let peak = 0;
   const starts = [];
@@ -292,4 +312,60 @@ test("chlorides are assessed as no concern, not moderate (EFSA 2019)", () => {
   assert.equal(r.count, 1);
   assert.equal(findAdditives("Salt, Potassium Chloride").risk, "none");
   assert.equal(findAdditives("Ham, Preservative (250)").risk, "high", "ratings elsewhere unchanged");
+});
+
+test("product details for a product from a recent search come from memory", async () => {
+  await callTool("woolworths_search_products", { searchTerm: "milk" });
+  const sent = requests.length;
+  const r = await callTool("woolworths_get_product_details", { stockcode: "888137" });
+  assert.equal(requests.length, sent, "no request");
+  assert.equal(r.product.name, "Woolworths Full Cream Milk 2L");
+  assert.ok(r.product.nutrition, "a search tile carries nutrition");
+  const h = await callTool("woolworths_get_product_details", { stockcode: "888137", detail: "health" });
+  assert.deepEqual(h.product.health, { risk: "none" });
+});
+
+test("detail=full always asks Woolworths: a search tile is not the detail payload", async () => {
+  await callTool("woolworths_search_products", { searchTerm: "milk" });
+  const r = await callTool("woolworths_get_product_details", { stockcode: "888137", detail: "full" });
+  assert.equal(requests.at(-1).path, "/apis/ui/product/detail/888137");
+  assert.ok(r.product.Product, "the raw payload");
+});
+
+test("stockcodes: one call, memory first, requests only for the rest", async () => {
+  await callTool("woolworths_search_products", { searchTerm: "milk" });
+  const sent = requests.length;
+  const r = await callTool("woolworths_get_product_details", { stockcodes: ["888137", "999", "88436", "888137"] });
+  assert.equal(requests.length - sent, 1, "only the unseen product is fetched");
+  assert.deepEqual(r.products.map((p) => p.stockcode), [888137, 888140, 88436]);
+  await assert.rejects(callTool("woolworths_get_product_details", { stockcodes: [] }), /1 to 20/);
+  await assert.rejects(callTool("woolworths_get_product_details", { stockcodes: Array(21).fill("1") }), /1 to 20/);
+  await assert.rejects(callTool("woolworths_get_product_details", {}), /stockcode/);
+});
+
+test("stockcodes: one failure is reported per product, not for the whole call", async () => {
+  statuses = [200, 404];
+  const r = await callTool("woolworths_get_product_details", { stockcodes: ["1", "2", "3"] });
+  assert.equal(r.products.length, 3);
+  assert.match(r.products[1].error, /404/);
+  assert.equal(r.products[2].stockcode, 888140);
+});
+
+test("a reload re-earns the session without reopening the browser", async () => {
+  let opened = 0;
+  _resetForTests(async () => {
+    opened++;
+    return fakeSession();
+  });
+  const realNow = Date.now;
+  try {
+    await callTool("woolworths_get_product_details", { stockcode: "1" });
+    Date.now = () => realNow() + 120_000;
+    statuses = [403];
+    await callTool("woolworths_get_product_details", { stockcode: "2" });
+    assert.equal(opened, 1);
+    assert.equal(captures, 2, "opened once, reloaded once");
+  } finally {
+    Date.now = realNow;
+  }
 });

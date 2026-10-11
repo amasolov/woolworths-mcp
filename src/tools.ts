@@ -53,14 +53,45 @@ const SORT_TYPES = ["TraderRelevance", "PriceAsc", "PriceDesc", "Name"];
 // call within a conversation; product details - ingredients above all - are
 // the most repeated and the slowest to change.
 const SEARCH_CACHE_MS = 5 * 60 * 1000;
+const MAX_STOCKCODES = 20;
 const DETAIL_CACHE_MS = 30 * 60 * 1000;
 
+// Every product a search or browse returns, by stockcode. A search tile
+// carries everything slimProduct reads - price, specials, nutrition,
+// ingredients - so get_product_details can answer from here without a
+// request: the usual pattern is a search, then details for a few of its
+// results, and a details call per result is what got the server rate-limited.
+const SEEN_MS = 30 * 60 * 1000;
+const SEEN_MAX = 2000;
+const seen = new Map<number, { p: any; expires: number }>();
+
+function rememberProducts(tiles: any[] | undefined) {
+  for (const tile of tiles ?? []) {
+    for (const p of tile?.Products ?? [tile]) {
+      if (typeof p?.Stockcode !== "number") continue;
+      seen.delete(p.Stockcode);
+      if (seen.size >= SEEN_MAX) seen.delete(seen.keys().next().value!);
+      seen.set(p.Stockcode, { p, expires: Date.now() + SEEN_MS });
+    }
+  }
+}
+
+function seenProduct(stockcode: number): any | undefined {
+  const hit = seen.get(stockcode);
+  return hit && hit.expires > Date.now() ? hit.p : undefined;
+}
+
+/** Test seam: forget remembered products. */
+export function _resetProductsForTests() {
+  seen.clear();
+}
+
 // One page of raw search results.
-function searchRaw(
+async function searchRaw(
   searchTerm: string,
   { pageNumber = 1, pageSize = 10, sortType = "TraderRelevance", isSpecial = false } = {}
 ): Promise<any> {
-  return request("/apis/ui/Search/products", {
+  const data = await request("/apis/ui/Search/products", {
     cacheMs: SEARCH_CACHE_MS,
     body: {
       searchTerm,
@@ -76,6 +107,8 @@ function searchRaw(
       groupEdmVariants: false,
     },
   });
+  rememberProducts(data?.Products);
+  return data;
 }
 
 // --- catalogue -------------------------------------------------------------
@@ -129,26 +162,54 @@ const catalogue: Array<Tool & { handler: Handler }> = [
   {
     name: "woolworths_get_product_details",
     description:
-      "Get one Woolworths product by stockcode, including per-100g nutrition by default. " +
-      "Do not call this for every product in a list: woolworths_search_products with detail nutrition or health, " +
-      "or woolworths_find_healthier, already return the same data for a whole page in one call, " +
-      "and a burst of calls gets the server rate-limited by Woolworths.",
+      "Get Woolworths products by stockcode, including per-100g nutrition by default. " +
+      "For several products pass `stockcodes` in one call rather than calling once per product. " +
+      "Products from a recent search or specials page are answered from memory. " +
+      "To rate a whole page, woolworths_search_products with detail nutrition or health, or woolworths_find_healthier, is one call.",
     inputSchema: {
       type: "object",
       properties: {
-        stockcode: { type: "string", description: "The product stockcode" },
+        stockcode: { type: "string", description: "One product stockcode" },
+        stockcodes: {
+          type: "array",
+          items: { type: "string" },
+          maxItems: MAX_STOCKCODES,
+          description: `Several product stockcodes, up to ${MAX_STOCKCODES}`,
+        },
         detail: detailSchema("nutrition"),
       },
-      required: ["stockcode"],
     },
     async handler(args) {
-      const stockcode = String(args.stockcode ?? "");
-      if (!/^\d+$/.test(stockcode)) throw new Error("stockcode must be numeric");
+      const single = args.stockcodes === undefined;
+      const raw = single ? [args.stockcode] : args.stockcodes;
+      if (!Array.isArray(raw) || raw.length === 0 || raw.length > MAX_STOCKCODES) {
+        throw new Error(`pass stockcode, or stockcodes with 1 to ${MAX_STOCKCODES} entries`);
+      }
+      const codes = raw.map((c) => String(c ?? ""));
+      const bad = codes.find((c) => !/^\d+$/.test(c));
+      if (bad !== undefined) throw new Error(`stockcode must be numeric, not "${bad}"`);
       const d = detail(args, "nutrition");
-      const data = await request(`/apis/ui/product/detail/${stockcode}`, { cacheMs: DETAIL_CACHE_MS });
-      // The detail endpoint wraps the product in `Product` (confirmed live);
-      // fall back to the top level in case that ever changes.
-      return { product: d === "full" ? data : slimProduct(data?.Product ?? data, d) };
+
+      const lookup = async (code: string) => {
+        // `full` is the detail endpoint's own payload, which a search tile is not.
+        const known = d === "full" ? undefined : seenProduct(Number(code));
+        if (known) return slimProduct(known, d);
+        try {
+          const data = await request(`/apis/ui/product/detail/${code}`, { cacheMs: DETAIL_CACHE_MS });
+          // The detail endpoint wraps the product in `Product` (confirmed
+          // live); fall back to the top level in case that ever changes.
+          return d === "full" ? data : slimProduct(data?.Product ?? data, d);
+        } catch (error) {
+          if (single) throw error;
+          return { stockcode: Number(code), error: (error as Error).message };
+        }
+      };
+      // Sequential: the misses are real requests and pacing would serialise
+      // them anyway. If one draws a rate-limit, the rest fail fast on the
+      // cooldown rather than adding to it.
+      const products = [];
+      for (const code of [...new Set(codes)]) products.push(await lookup(code));
+      return single ? { product: products[0] } : { products };
     },
   },
   {
@@ -282,6 +343,7 @@ const catalogue: Array<Tool & { handler: Handler }> = [
       const d = detail(args, "summary");
       const { node, specialsOnly } = await resolveSpecials(type, category);
       const data = await browse(node, { specialsOnly, pageNumber, pageSize });
+      rememberProducts(data.Bundles || data.Products);
       const total = data.TotalRecordCount || 0;
       return {
         specials: node.path,
