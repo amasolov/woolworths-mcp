@@ -20,6 +20,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { callTool, toolDefinitions } from "./tools.js";
+import { shutdown as closeBrowser } from "./woolworths.js";
 
 // The version is package.json's, so a release bump cannot miss it.
 const { version } = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
@@ -126,6 +127,7 @@ async function runHttp() {
   });
 
   const shutdown = () => {
+    closeBrowser();
     http.close(() => process.exit(0));
     // Don't wait on a slow in-flight request past the pod's grace period.
     setTimeout(() => process.exit(0), 10_000).unref();

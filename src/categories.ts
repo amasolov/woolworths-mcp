@@ -136,6 +136,7 @@ export async function resolveSpecials(type?: string, category?: string): Promise
 /** One page of a category's products, as the website's browse page loads them. */
 export async function browse(node: CategoryNode, opts: { specialsOnly: boolean; pageNumber: number; pageSize: number }) {
   return request("/apis/ui/browse/category", {
+    cacheMs: 5 * 60 * 1000,
     body: {
       categoryId: node.id,
       pageNumber: opts.pageNumber,

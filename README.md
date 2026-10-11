@@ -10,9 +10,17 @@ This continues [elijah-g/Woolworths-mcp](https://github.com/elijah-g/Woolworths-
 
 ## How it works
 
-Woolworths' web APIs sit behind bot protection: a request needs the cookies a real browser picks up on the homepage. The server handles that itself. The first tool call launches headless Chromium (through Puppeteer), loads the homepage, keeps the cookies and closes the browser. Later calls reuse the cookies. When Woolworths answers 403 the cookies are refreshed once and the call retried. If they were refreshed less than a minute ago, the call fails at once instead of launching another browser.
+Woolworths' web APIs sit behind Akamai Bot Manager. A request needs the cookies a real browser earns on the homepage, and those cookies are tied to the client that earned them. So the server calls the API from a real browser:
 
-The first call takes a few seconds; later ones are API round trips.
+- **Opening the browser.** The first tool call launches headless Chromium (through Puppeteer) with two tabs. One loads the homepage, where Akamai's script runs and keeps the cookies current. The other sits on the Woolworths origin and makes the API calls with the browser's own `fetch()`, as the website does. This takes about 1–3s and uses roughly 250 MB.
+- **Keeping it open.** The browser stays open while calls come in and closes after 10 minutes without one.
+- **When Woolworths refuses a call.** On a 403, or its bot-check page (HTTP 200 with HTML instead of JSON), the homepage tab reloads once and the call is retried. If the refusal persists, the call fails with a "rate-limited, retry later" error, and the server makes no calls to Woolworths for a minute rather than prolonging the block. A 401 is reported as-is: the endpoint wants a logged-in account.
+
+To stay well under the bot protection's thresholds, the server keeps its own traffic low:
+
+- **Pacing.** At most two calls at once, with their starts at least 250 ms apart.
+- **Caching identical calls.** Searches and specials for 5 minutes, product details for 30.
+- **Remembering products.** Every product a search or specials page returns is kept for 30 minutes. A search result carries price, specials, nutrition and ingredients, so `woolworths_get_product_details` for those products needs no request at all.
 
 The session is anonymous. It is enough for the catalogue, but not tied to anyone's Woolworths account.
 
@@ -69,8 +77,11 @@ There is no authentication. Put it behind something that has some.
 
 ### woolworths_get_product_details
 
-- `stockcode` (string, required)
+- `stockcode` (string): one product, or
+- `stockcodes` (string array, up to 20): several in one call. Failures are reported per product.
 - `detail` (default `nutrition`)
+
+Products from a search or specials page in the last 30 minutes are answered from memory. `full` always asks Woolworths, because a search result is not the detail endpoint's payload.
 
 ### woolworths_find_healthier
 
@@ -80,7 +91,7 @@ Find the healthier options for a shopping-list item: search, rate every result's
 - `searchTerm` (string, required): a plain product name - "chicken stock", not "500 mL chicken stock, salt-reduced"
 - `maxRisk` (string, optional): `none`, `watch`, `moderate` or `high` - the worst additive risk to keep (default: `moderate`, i.e. drop only `high`)
 - `limit` (number, optional): products to return (default: 5)
-- `candidates` (number, optional): search results to rate (default: 24, max: 36)
+- `candidates` (number, optional): search results to rate (default: 12, max: 36)
 - `sameShelf` (boolean, optional): compare only products on the same shelf as the top results (default: true)
 
 Returns `products` (slim, at `health` detail), `shelf`, and `excluded` - what was dropped and why. When nothing passes (cured meats, nearly always nitrite and phosphates), `leastBad` holds the closest.
@@ -147,7 +158,7 @@ Levels:
 | Level | Meaning | Examples |
 | --- | --- | --- |
 | `high` | EFSA found a high risk of some consumers exceeding the safe intake | nitrites, sulphites, benzoates, sorbates, phosphates, carrageenan, MSG |
-| `moderate` | A lesser EFSA overexposure risk, or one of the six azo colours that carry an EU hyperactivity warning | ammonia caramel (150c), tartrazine (102), potassium chloride (508) |
+| `moderate` | A lesser EFSA overexposure risk, or one of the six azo colours that carry an EU hyperactivity warning | ammonia caramel (150c), tartrazine (102), sunset yellow (110) |
 | `watch` | On the ANSES (France) 2019 list of additives of interest | acesulfame K, sucralose, 472e |
 | `none` | Assessed, no concern; or nothing rated was found | |
 
